@@ -6,3 +6,5 @@ ollama
 pgvector
 pandas
 python-dotenv
+streamlit-agraph
+pyvis

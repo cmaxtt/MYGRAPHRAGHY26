@@ -88,5 +88,31 @@ class SearchEngine:
         response = ollama.generate(model=self.llm_model, prompt=prompt)
         return response['response']
 
+    def get_all_graph_data(self):
+        driver = self.db.connect_neo4j()
+        nodes = []
+        edges = []
+        with driver.session() as session:
+            # Get nodes
+            node_query = "MATCH (n:Entity) RETURN n.name as id, n.name as label, labels(n)[0] as type LIMIT 100"
+            node_res = session.run(node_query)
+            for record in node_res:
+                nodes.append({
+                    "id": record["id"],
+                    "label": record["label"],
+                    "type": record["type"]
+                })
+            
+            # Get edges
+            edge_query = "MATCH (s:Entity)-[r]->(o:Entity) RETURN s.name as source, type(r) as label, o.name as target LIMIT 100"
+            edge_res = session.run(edge_query)
+            for record in edge_res:
+                edges.append({
+                    "source": record["source"],
+                    "label": record["label"],
+                    "target": record["target"]
+                })
+        return nodes, edges
+
     def close(self):
         self.db.close()

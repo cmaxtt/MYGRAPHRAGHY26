@@ -3,6 +3,7 @@ import os
 import tempfile
 from ingest import Ingestor
 from search import SearchEngine
+from streamlit_agraph import agraph, Node, Edge, Config
 
 st.set_page_config(page_title="Local Hybrid GraphRAG", layout="wide")
 
@@ -55,36 +56,66 @@ with st.sidebar:
         # This is a dangerous but useful feature for dev
         st.warning("Feature not fully implemented via UI for safety. See README.md for manual reset.")
 
-# Chat Interface
-st.header("💬 Chat with your Knowledge Base")
+# Main area with Tabs
+tab1, tab2 = st.tabs(["💬 Chat", "🕸️ Knowledge Graph"])
 
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+with tab1:
+    st.header("Chat with your Knowledge Base")
+    
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-if prompt := st.chat_input("Ask a question about your documents..."):
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    if prompt := st.chat_input("Ask a question about your documents..."):
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Searching and generating answer..."):
-            try:
-                result = search_engine.hybrid_search(prompt)
-                answer = result["answer"]
-                sources = result["sources"]
-                
-                # Show search metadata
-                with st.expander("🔍 Search Details (Hybrid)"):
-                    st.write(f"**Search Type:** `Hybrid (Vector + Graph)`")
-                    st.write(f"**Vector Chunks Found:** `{sources['vector_count']}`")
-                    st.write(f"**Graph Relationships Found:** `{sources['graph_count']}`")
-                    st.write(f"**Entities Extracted:** `{', '.join(sources['entities_found'])}`")
-                
-                st.markdown(answer)
-                st.session_state.chat_history.append({"role": "assistant", "content": answer})
-            except Exception as e:
-                st.error(f"Error during search: {e}")
+        with st.chat_message("assistant"):
+            with st.spinner("Searching and generating answer..."):
+                try:
+                    result = search_engine.hybrid_search(prompt)
+                    answer = result["answer"]
+                    sources = result["sources"]
+                    
+                    # Show search metadata
+                    with st.expander("🔍 Search Details (Hybrid)"):
+                        st.write(f"**Search Type:** `Hybrid (Vector + Graph)`")
+                        st.write(f"**Vector Chunks Found:** `{sources['vector_count']}`")
+                        st.write(f"**Graph Relationships Found:** `{sources['graph_count']}`")
+                        st.write(f"**Entities Extracted:** `{', '.join(sources['entities_found'])}`")
+                    
+                    st.markdown(answer)
+                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                except Exception as e:
+                    st.error(f"Error during search: {e}")
+
+with tab2:
+    st.header("Knowledge Graph Visualization")
+    if st.button("🔄 Refresh Graph"):
+        st.rerun()
+
+    with st.spinner("Loading graph data..."):
+        nodes_data, edges_data = search_engine.get_all_graph_data()
+        
+        if not nodes_data:
+            st.info("No data in the Knowledge Graph yet. Upload documents to see the graph!")
+        else:
+            nodes = [Node(id=n["id"], label=n["label"], size=25, color="#007bff") for n in nodes_data]
+            edges = [Edge(source=e["source"], label=e["label"], target=e["target"]) for e in edges_data]
+            
+            config = Config(
+                width=1000, 
+                height=600, 
+                directed=True, 
+                nodeHighlightBehavior=True, 
+                highlightColor="#F7A7A6",
+                collapsible=True,
+                node={'labelProperty': 'label'},
+                link={'labelProperty': 'label', 'renderLabel': True}
+            )
+            
+            agraph(nodes=nodes, edges=edges, config=config)
 
 # Cleanup on app close (if possible) or session end
 # Note: Database handles are managed in session state, 
