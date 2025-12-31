@@ -29,6 +29,17 @@ if "chat_history" not in st.session_state:
 with st.sidebar:
     st.title("⚙️ System Status")
     st.info(f"**LLM Model:** `{search_engine.llm_model}`\n\n**Embed Model:** `{search_engine.embed_model}`")
+    
+    # Database Stats
+    try:
+        nodes_count, rels_count = 0, 0
+        driver = search_engine.db.connect_neo4j()
+        with driver.session() as session:
+            nodes_count = session.run("MATCH (n) RETURN count(n) as count").single()["count"]
+            rels_count = session.run("MATCH ()-[r]->() RETURN count(r) as count").single()["count"]
+        st.success(f"📊 **Database Stats:**\n- Nodes: `{nodes_count}`\n- Relationships: `{rels_count}`")
+    except:
+        st.error("Could not connect to Knowledge Graph for stats")
     st.divider()
     
     st.header("📁 Document Ingestion")
@@ -52,9 +63,24 @@ with st.sidebar:
                     os.unlink(tmp_path)
             status.update(label="Ingestion Complete!", state="complete", expanded=False)
 
-    if st.button("🗑️ Reset Databases"):
-        # This is a dangerous but useful feature for dev
-        st.warning("Feature not fully implemented via UI for safety. See README.md for manual reset.")
+    if st.button("🗑️ Reset Databases", type="secondary"):
+        if st.checkbox("Confirm deletion of ALL data?"):
+            try:
+                # Reset PG
+                conn = search_engine.db.connect_pg()
+                with conn.cursor() as cur:
+                    cur.execute("TRUNCATE TABLE chunks RESTART IDENTITY")
+                search_engine.db.release_pg(conn)
+                
+                # Reset Neo4j
+                driver = search_engine.db.connect_neo4j()
+                with driver.session() as session:
+                    session.run("MATCH (n) DETACH DELETE n")
+                
+                st.success("All data cleared successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error resetting: {e}")
 
 # Main area with Tabs
 tab1, tab2 = st.tabs(["💬 Chat", "🕸️ Knowledge Graph"])

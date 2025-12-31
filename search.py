@@ -74,17 +74,16 @@ class SearchEngine:
         with driver.session() as session:
             for entity in entities:
                 # Use Full-Text search for true fuzzy matching
-                # The '~' character indicates fuzzy matching in Lucene syntax
                 query = """
                 CALL db.index.fulltext.queryNodes("entity_names_index", $name + "~") 
                 YIELD node, score
-                MATCH (node)-[r*1..2]-(neighbor)
-                RETURN DISTINCT node.name as s, type(r[0]) as p, neighbor.name as o
-                LIMIT 10
+                MATCH (node)-[r]-(neighbor)
+                RETURN DISTINCT node.name as s, type(r) as p, neighbor.name as o
+                LIMIT 15
                 """
                 res = session.run(query, name=entity)
                 for record in res:
-                    results.append(f"{record['s']} {record['p']} {record['o']}")
+                    results.append(f"({record['s']}) -[{record['p']}]-> ({record['o']})")
         return list(set(results)) # Deduplicate
 
     def generate_answer(self, query: str, context: str) -> str:

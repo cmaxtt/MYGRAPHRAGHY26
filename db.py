@@ -8,14 +8,14 @@ import time
 load_dotenv()
 
 # PostgreSQL configuration
-PG_HOST = os.getenv("PG_HOST", "localhost")
+PG_HOST = os.getenv("PG_HOST", "127.0.0.1")
 PG_PORT = os.getenv("PG_PORT", "5432")
 PG_USER = os.getenv("PG_USER", "postgres")
 PG_PWD = os.getenv("PG_PWD", "password")
 PG_DB = os.getenv("PG_DB", "graphrag")
 
 # Neo4j configuration
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PWD = os.getenv("NEO4J_PWD", "password")
 
