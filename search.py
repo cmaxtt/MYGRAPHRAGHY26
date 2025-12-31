@@ -7,7 +7,7 @@ class SearchEngine:
     def __init__(self):
         self.db = Database()
         self.embed_model = "nomic-embed-text"
-        self.llm_model = "llama3.2"
+        self.llm_model = "gpt-oss:20b-cloud"
 
     def hybrid_search(self, query: str, top_k: int = 5) -> str:
         # 1. Vector Search

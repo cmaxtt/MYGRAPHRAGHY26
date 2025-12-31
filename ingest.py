@@ -12,7 +12,7 @@ class Ingestor:
         self.converter = DocumentConverter()
         self.chunker = HybridChunker()
         self.embed_model = "nomic-embed-text"
-        self.llm_model = "llama3.2"
+        self.llm_model = "gpt-oss:20b-cloud"
 
     def process_file(self, file_path: str):
         print(f"Processing {file_path}...")

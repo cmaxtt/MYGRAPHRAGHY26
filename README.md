@@ -7,7 +7,7 @@ A local implementation of GraphRAG using Docling, Neo4j, PostgreSQL (pgvector), 
 1.  **Docker**: Ensure Docker Desktop is running.
 2.  **Ollama**: Ensure Ollama is running and models are pulled:
     ```bash
-    ollama pull llama3.2
+    ollama pull gpt-oss:20b-cloud
     ollama pull nomic-embed-text
     ```
 3.  **Environment**:
