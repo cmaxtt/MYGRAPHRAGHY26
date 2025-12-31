@@ -7,7 +7,7 @@ from streamlit_agraph import agraph, Node, Edge, Config
 
 st.set_page_config(page_title="Local Hybrid GraphRAG", layout="wide")
 
-st.title("🌐 Local Hybrid GraphRAG System")
+st.title("🌐 CompuMax Local Hybrid GraphRAG System 2025")
 st.markdown("Build relationships from your documents and query them with Hybrid (Vector + Graph) Retrieval.")
 
 @st.cache_resource
