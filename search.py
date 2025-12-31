@@ -9,7 +9,7 @@ class SearchEngine:
         self.embed_model = "nomic-embed-text"
         self.llm_model = "gpt-oss:20b-cloud"
 
-    def hybrid_search(self, query: str, top_k: int = 5) -> str:
+    def hybrid_search(self, query: str, top_k: int = 5) -> Dict:
         # 1. Vector Search
         query_embedding = self.get_embedding(query)
         vector_results = self.vector_search(query_embedding, top_k)
@@ -29,7 +29,15 @@ class SearchEngine:
             
         # 4. Generate Answer
         answer = self.generate_answer(query, context)
-        return answer
+        
+        return {
+            "answer": answer,
+            "sources": {
+                "vector_count": len(vector_results),
+                "graph_count": len(graph_results),
+                "entities_found": entities
+            }
+        }
 
     def get_embedding(self, text: str) -> List[float]:
         response = ollama.embeddings(model=self.embed_model, prompt=text)

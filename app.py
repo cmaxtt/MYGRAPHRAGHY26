@@ -70,7 +70,17 @@ if prompt := st.chat_input("Ask a question about your documents..."):
     with st.chat_message("assistant"):
         with st.spinner("Searching and generating answer..."):
             try:
-                answer = search_engine.hybrid_search(prompt)
+                result = search_engine.hybrid_search(prompt)
+                answer = result["answer"]
+                sources = result["sources"]
+                
+                # Show search metadata
+                with st.expander("🔍 Search Details (Hybrid)"):
+                    st.write(f"**Search Type:** `Hybrid (Vector + Graph)`")
+                    st.write(f"**Vector Chunks Found:** `{sources['vector_count']}`")
+                    st.write(f"**Graph Relationships Found:** `{sources['graph_count']}`")
+                    st.write(f"**Entities Extracted:** `{', '.join(sources['entities_found'])}`")
+                
                 st.markdown(answer)
                 st.session_state.chat_history.append({"role": "assistant", "content": answer})
             except Exception as e:
