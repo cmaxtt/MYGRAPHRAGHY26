@@ -38,7 +38,7 @@ MATCH (n) DETACH DELETE n;
 
 Alternatively, wipe volumes:
 ```bash
-bash docker-compose down -v
+docker-compose down -v
 docker-compose up -d
 python db.py
 ```
