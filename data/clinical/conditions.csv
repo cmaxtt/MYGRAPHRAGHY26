@@ -1,0 +1,11 @@
+conditionId,name
+C1,"Benign Prostatic Hyperplasia"
+C2,"Breast Cancer"
+C3,"Type 2 Diabetes"
+C4,"Hypertension"
+C5,"Chronic Kidney Disease"
+C6,"Asthma"
+C7,"Coronary Artery Disease"
+C8,"Rheumatoid Arthritis"
+C9,"Major Depressive Disorder"
+C10,"Osteoarthritis"

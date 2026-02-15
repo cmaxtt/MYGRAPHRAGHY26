@@ -60,30 +60,67 @@ class SearchEngine:
 
     def extract_entities(self, query: str) -> List[str]:
         prompt = f"""
-        Extract the most important specific entities (people, places, products, concepts) from the following query.
-        Return ONLY a comma-separated list of names. No extra text.
+        Extract the most important specific entities from the following query.
+        Look for:
+        - People (e.g., Sarah Singh)
+        - Identifiers (e.g., P20, V72, D1)
+        - Medications (e.g., Tamoxifen)
+        - Conditions (e.g., Type 2 Diabetes)
+        
+        Return ONLY a comma-separated list of names or IDs. No extra text.
         Query: {query}
         """
         response = ollama.generate(model=self.llm_model, prompt=prompt)
         entities = [e.strip() for e in response['response'].split(',') if len(e.strip()) > 1]
-        return entities[:5] # Limit to top 5 entities for performance
+        return entities[:8] # Increased limit slightly
 
     def graph_search(self, entities: List[str]) -> List[str]:
         driver = self.db.connect_neo4j()
         results = []
         with driver.session() as session:
             for entity in entities:
-                # Use Full-Text search for true fuzzy matching
+                # Check for clinical labels and Entity labels
+                # Deep search: 1-hop and 2-hop for specific labels like Patient -> Visit -> Medication
                 query = """
-                CALL db.index.fulltext.queryNodes("entity_names_index", $name + "~") 
-                YIELD node, score
+                MATCH (node) 
+                WHERE (node:Patient OR node:Doctor OR node:Medication OR node:Condition OR node:Visit OR node:Entity)
+                AND (node.name =~ ('(?i).*' + $name + '.*') OR node.patientId = $name OR node.doctorId = $name OR node.visitId = $name)
+                
+                // 1st level neighbors
                 MATCH (node)-[r]-(neighbor)
-                RETURN DISTINCT node.name as s, type(r) as p, neighbor.name as o
-                LIMIT 15
+                
+                // Optional 2nd level for Visits (to get prescriptions)
+                OPTIONAL MATCH (neighbor)-[r2:PRESCRIBED|TREATED_BY]-(grandchild)
+                WHERE neighbor:Visit
+                
+                RETURN DISTINCT 
+                    node.name as s, node.patientId as s_pid, node.visitId as s_vid, node.doctorId as s_did,
+                    type(r) as p, 
+                    neighbor.name as o, neighbor.patientId as o_pid, neighbor.visitId as o_vid, neighbor.doctorId as o_did,
+                    labels(node)[0] as s_label, labels(neighbor)[0] as o_label,
+                    type(r2) as p2,
+                    grandchild.name as g, grandchild.medicationId as g_mid, labels(grandchild)[0] as g_label
+                LIMIT 50
                 """
                 res = session.run(query, name=entity)
                 for record in res:
-                    results.append(f"({record['s']}) -[{record['p']}]-> ({record['o']})")
+                    # Format Start Node
+                    s_id = record['s_pid'] or record['s_vid'] or record['s_did']
+                    s_display = f"{record['s']} [{s_id}]" if record['s'] and s_id else (record['s'] or s_id or "Unknown")
+                    
+                    # Format Neighbor Node
+                    o_id = record['o_pid'] or record['o_vid'] or record['o_did']
+                    o_display = f"{record['o']} [{o_id}]" if record['o'] and o_id else (record['o'] or o_id or "Unknown")
+                    
+                    results.append(f"({s_display}:{record['s_label']}) -[{record['p']}]-> ({o_display}:{record['o_label']})")
+                    
+                    # Add 2nd hop if exists
+                    if record['p2']:
+                        g_id = record['g_mid']
+                        g_display = f"{record['g']} [{g_id}]" if record['g'] and g_id else (record['g'] or g_id or "Unknown")
+                        results.append(f"({o_display}:{record['o_label']}) -[{record['p2']}]-> ({g_display}:{record['g_label']})")
+        
+        print(f"DEBUG: Found {len(results)} graph relationships for entities {entities}")
         return list(set(results)) # Deduplicate
 
     def generate_answer(self, query: str, context: str) -> str:

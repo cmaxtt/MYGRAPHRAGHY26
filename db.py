@@ -87,10 +87,17 @@ class Database:
         # Initialize Neo4j constraints
         driver = self.connect_neo4j()
         with driver.session() as session:
+            # General Entity constraints (from original)
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
             session.run("CREATE INDEX IF NOT EXISTS FOR (e:Entity) ON (e.type)")
-            # Add Full-Text index for fuzzy matching on entity names
             session.run("CREATE FULLTEXT INDEX entity_names_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]")
+            
+            # Clinical Specific constraints
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Patient) REQUIRE p.patientId IS UNIQUE")
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (d:Doctor) REQUIRE d.doctorId IS UNIQUE")
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (m:Medication) REQUIRE m.medicationId IS UNIQUE")
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Condition) REQUIRE c.conditionId IS UNIQUE")
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (v:Visit) REQUIRE v.visitId IS UNIQUE")
 
     def close(self):
         if Database._pg_pool:
