@@ -1,32 +1,63 @@
+"""
+Document ingestor for processing PDF, DOCX, XLSX, CSV, and TXT files.
+Uses Docling for parsing and Ollama for triplet extraction.
+"""
 import os
-import ollama
 import json
+import logging
+from typing import List, Dict
+from concurrent.futures import ThreadPoolExecutor
+
 from docling.document_converter import DocumentConverter
 from docling.chunking import HybridChunker
-from db import Database
-from typing import List, Dict
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-class Ingestor:
-    def __init__(self):
-        self.db = Database()
+from base_ingestor import BaseIngestor
+from config import settings
+
+
+logger = logging.getLogger(__name__)
+
+
+class Ingestor(BaseIngestor):
+    """Document ingestor for processing files with Docling and Ollama."""
+    
+    def __init__(self, db=None):
+        """
+        Initialize document ingestor.
+        
+        Args:
+            db: Database instance (optional)
+        """
+        super().__init__(db)
         self.converter = DocumentConverter()
         self.chunker = HybridChunker()
-        self.embed_model = "nomic-embed-text"
-        self.llm_model = "gpt-oss:20b-cloud"
-
-    def process_file(self, file_path: str):
-        print(f"Processing {file_path}...")
+    
+    def process_file(self, file_path: str) -> None:
+        """
+        Process a single file: parse, chunk, embed, extract triplets.
+        
+        Args:
+            file_path: Path to the file
+        """
+        logger.info(f"Processing {file_path}...")
         result = self.converter.convert(file_path)
         doc = result.document
         chunks = list(self.chunker.chunk(doc))
         
-        from concurrent.futures import ThreadPoolExecutor
-        
-        print(f"  Ingesting {len(chunks)} chunks in parallel...")
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        logger.info(f"  Ingesting {len(chunks)} chunks in parallel...")
+        with ThreadPoolExecutor(max_workers=settings.MAX_WORKERS or min(32, os.cpu_count() + 4)) as executor:
             list(executor.map(lambda x: self._process_chunk(x[1], x[0], file_path), enumerate(chunks)))
-
-    def _process_chunk(self, chunk, index, file_path):
+    
+    def _process_chunk(self, chunk, index: int, file_path: str) -> None:
+        """
+        Process a single chunk: store vector and extract/store triplets.
+        
+        Args:
+            chunk: Docling chunk object
+            index: Chunk index
+            file_path: Source file path
+        """
         text = chunk.text
         # 1. Store in Vector DB (PostgreSQL)
         embedding = self.get_embedding(text)
@@ -34,13 +65,21 @@ class Ingestor:
         
         # 2. Extract Triplets and Store in Graph DB (Neo4j)
         triplets = self.extract_triplets(text)
-        self.store_graph(triplets)
-
-    def get_embedding(self, text: str) -> List[float]:
-        response = ollama.embeddings(model=self.embed_model, prompt=text)
-        return response['embedding']
-
+        self.store_triplets(triplets)
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def extract_triplets(self, text: str) -> List[Dict]:
+        """
+        Extract semantic triplets (subject-predicate-object) from text using LLM.
+        
+        Args:
+            text: Text to extract triplets from
+            
+        Returns:
+            List of triplets as dicts with 'subject', 'predicate', 'object' keys
+        """
+        import ollama
+        
         prompt = f"""
         Extract semantic triplets (Subject, Predicate, Object) from the following text.
         Return ONLY a JSON list of objects with "subject", "predicate", and "object" keys.
@@ -57,41 +96,9 @@ class Ingestor:
                 return data["triplets"]
             return []
         except Exception as e:
-            print(f"Error extracting triplets: {e}")
+            logger.error(f"Error extracting triplets: {e}")
             return []
 
-    def store_vector(self, text: str, embedding: List[float], metadata: Dict):
-        conn = self.db.connect_pg()
-        if not conn: return
-        try:
-            conn.autocommit = True
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO chunks (content, metadata, embedding) VALUES (%s, %s, %s)",
-                    (text, json.dumps(metadata), embedding)
-                )
-        finally:
-            self.db.release_pg(conn)
-
-    def store_graph(self, triplets: List[Dict]):
-        driver = self.db.connect_neo4j()
-        with driver.session() as session:
-            for t in triplets:
-                # Basic cleaning
-                s = str(t.get('subject', '')).strip()
-                p = str(t.get('predicate', '')).strip().upper().replace(" ", "_")
-                o = str(t.get('object', '')).strip()
-                
-                if s and p and o:
-                    query = f"""
-                    MERGE (s:Entity {{name: $s_name}})
-                    MERGE (o:Entity {{name: $o_name}})
-                    MERGE (s)-[r:{p}]->(o)
-                    """
-                    session.run(query, s_name=s, o_name=o)
-
-    def close(self):
-        self.db.close()
 
 if __name__ == "__main__":
     # Test with a dummy file if needed, but primarily used by app.py

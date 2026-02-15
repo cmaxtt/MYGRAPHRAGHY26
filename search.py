@@ -1,15 +1,21 @@
 import ollama
+import logging
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
+
 from db import Database
+from config import settings
 from typing import List, Dict
 import json
 
 class SearchEngine:
-    def __init__(self):
-        self.db = Database()
-        self.embed_model = "nomic-embed-text"
-        self.llm_model = "gpt-oss:20b-cloud"
+    def __init__(self, db=None):
+        self.db = db or Database()
+        self.embed_model = settings.EMBED_MODEL
+        self.llm_model = settings.LLM_MODEL
 
-    def hybrid_search(self, query: str, top_k: int = 5) -> Dict:
+    def hybrid_search(self, query: str, top_k: int = settings.VECTOR_TOP_K) -> Dict:
         # 1. Vector Search
         query_embedding = self.get_embedding(query)
         vector_results = self.vector_search(query_embedding, top_k)
@@ -39,6 +45,7 @@ class SearchEngine:
             }
         }
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def get_embedding(self, text: str) -> List[float]:
         response = ollama.embeddings(model=self.embed_model, prompt=text)
         return response['embedding']
@@ -58,6 +65,7 @@ class SearchEngine:
         finally:
             self.db.release_pg(conn)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def extract_entities(self, query: str) -> List[str]:
         prompt = f"""
         Extract the most important specific entities from the following query.
@@ -79,50 +87,55 @@ class SearchEngine:
         results = []
         with driver.session() as session:
             for entity in entities:
-                # Check for clinical labels and Entity labels
-                # Deep search: 1-hop and 2-hop for specific labels like Patient -> Visit -> Medication
+                # Optimized search using the unified Entity label
+                # We look for nodes with the Entity label that match the name or ID
                 query = """
-                MATCH (node) 
-                WHERE (node:Patient OR node:Doctor OR node:Medication OR node:Condition OR node:Visit OR node:Entity)
-                AND (node.name =~ ('(?i).*' + $name + '.*') OR node.patientId = $name OR node.doctorId = $name OR node.visitId = $name)
+                MATCH (node:Entity) 
+                WHERE (node.name =~ ('(?i).*' + $name + '.*') OR node.patientId = $name OR node.doctorId = $name OR node.visitId = $name)
                 
                 // 1st level neighbors
-                MATCH (node)-[r]-(neighbor)
+                MATCH (node)-[r]-(neighbor:Entity)
                 
-                // Optional 2nd level for Visits (to get prescriptions)
-                OPTIONAL MATCH (neighbor)-[r2:PRESCRIBED|TREATED_BY]-(grandchild)
+                // Optional 2nd level for Visits (to get prescriptions/treatments) - specific to clinical flow but generic enough
+                OPTIONAL MATCH (neighbor)-[r2:PRESCRIBED|TREATED_BY]-(grandchild:Entity)
                 WHERE neighbor:Visit
                 
                 RETURN DISTINCT 
-                    node.name as s, node.patientId as s_pid, node.visitId as s_vid, node.doctorId as s_did,
+                    node.name as s, 
                     type(r) as p, 
-                    neighbor.name as o, neighbor.patientId as o_pid, neighbor.visitId as o_vid, neighbor.doctorId as o_did,
-                    labels(node)[0] as s_label, labels(neighbor)[0] as o_label,
+                    neighbor.name as o, 
+                    labels(node) as s_labels, labels(neighbor) as o_labels,
                     type(r2) as p2,
-                    grandchild.name as g, grandchild.medicationId as g_mid, labels(grandchild)[0] as g_label
+                    grandchild.name as g, labels(grandchild) as g_labels
                 LIMIT 50
                 """
-                res = session.run(query, name=entity)
-                for record in res:
-                    # Format Start Node
-                    s_id = record['s_pid'] or record['s_vid'] or record['s_did']
-                    s_display = f"{record['s']} [{s_id}]" if record['s'] and s_id else (record['s'] or s_id or "Unknown")
-                    
-                    # Format Neighbor Node
-                    o_id = record['o_pid'] or record['o_vid'] or record['o_did']
-                    o_display = f"{record['o']} [{o_id}]" if record['o'] and o_id else (record['o'] or o_id or "Unknown")
-                    
-                    results.append(f"({s_display}:{record['s_label']}) -[{record['p']}]-> ({o_display}:{record['o_label']})")
-                    
-                    # Add 2nd hop if exists
-                    if record['p2']:
-                        g_id = record['g_mid']
-                        g_display = f"{record['g']} [{g_id}]" if record['g'] and g_id else (record['g'] or g_id or "Unknown")
-                        results.append(f"({o_display}:{record['o_label']}) -[{record['p2']}]-> ({g_display}:{record['g_label']})")
+                try:
+                    res = session.run(query, name=entity)
+                    for record in res:
+                        # Helper to get the most specific label (filtering out 'Entity')
+                        def get_label(labels):
+                            return next((l for l in labels if l != 'Entity'), 'Entity')
+
+                        s_label = get_label(record['s_labels'])
+                        o_label = get_label(record['o_labels'])
+                        
+                        s_name = record['s'] or "Unknown"
+                        o_name = record['o'] or "Unknown"
+
+                        results.append(f"({s_name}:{s_label}) -[{record['p']}]-> ({o_name}:{o_label})")
+                        
+                        # Add 2nd hop if exists
+                        if record['p2']:
+                            g_label = get_label(record['g_labels'])
+                            g_name = record['g'] or "Unknown"
+                            results.append(f"({o_name}:{o_label}) -[{record['p2']}]-> ({g_name}:{g_label})")
+                except Exception as e:
+                    logger.error(f"Error in graph search for entity '{entity}': {e}")
         
-        print(f"DEBUG: Found {len(results)} graph relationships for entities {entities}")
+        logger.info(f"DEBUG: Found {len(results)} graph relationships for entities {entities}")
         return list(set(results)) # Deduplicate
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def generate_answer(self, query: str, context: str) -> str:
         prompt = f"""
         You are a helpful assistant. Use the following context to answer the user query.

@@ -8,8 +8,7 @@ env/
 build/
 develop-eggs/
 dist/
-downloads/
-eggs/
+downloads/eggs/
 .eggs/
 lib/
 lib64/
@@ -39,3 +38,6 @@ dickens/
 kv_store_llm_response_cache.json
 # data/ # Keep clinical data for demo if needed, but ignore large uploads
 uploads/
+
+# Windows reserved/garbage
+nul

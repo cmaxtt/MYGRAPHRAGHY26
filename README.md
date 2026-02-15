@@ -1,99 +1,151 @@
 # 🌐 CompuMax Local Hybrid GraphRAG System 2025
 
-A high-performance, local implementation of **GraphRAG** (Graph Retrieval-Augmented Generation) utilizing **Docling** for document parsing, **Neo4j** for relationship mapping, **PostgreSQL (pgvector)** for semantic search, and **Ollama** for local LLM inference.
+A high-performance, privacy-focused **Graph Retrieval-Augmented Generation (GraphRAG)** system that combines the power of **Vector Search** with the contextual richness of **Knowledge Graphs**. Built to run entirely locally, keeping your data secure.
+
+![GraphRAG Architecture](https://img.shields.io/badge/Architecture-Hybrid%20Graph%20%2B%20Vector-blue)
+![Python](https://img.shields.io/badge/Python-3.10%2B-green)
+![License](https://img.shields.io/badge/License-MIT-purple)
 
 ## 🚀 Key Features
 
-- **Hybrid Search**: Combines the precision of vector similarity (PostgreSQL) with the contextual depth of knowledge graphs (Neo4j).
-- **Local First**: Privacy-focused architecture running entirely on your own infrastructure.
-- **Intelligent Ingestion**: Uses `Docling`'s `HybridChunker` to respect document structure (headers, tables, paragraphs).
-- **Interactive Visualization**: Real-time knowledge graph exploration directly in the web UI.
-- **Clinical Dataset Demo**: Out-of-the-box support for clinical data simulations.
+*   **Hybrid Search Engine**: Synergizes **pgvector** (PostgreSQL) for semantic similarity and **Neo4j** for graph traversals to answer complex queries.
+*   **Local & Private**: Powered by **Ollama**, ensuring all LLM inference and embeddings happen on your machine. No data leaves your network.
+*   **Multi-Modal Ingestion**: 
+    *   **Clinical Data**: specialized ingestion for CSV patient records, doctor interactions, and prescriptions.
+    *   **Document Uploads**: Support for PDF, DOCX, XLSX, CSV, and TXT files via the Web UI.
+*   **Interactive UI**: A polished **Streamlit** interface offering:
+    *   Real-time chat with citation of sources (Vector vs. Graph nodes).
+    *   Dynamic **Knowledge Graph Visualization**.
+    *   System health metrics and database stats.
+*   **Advanced Entity Extraction**: Automatically identifies people, medications, conditions, and IDs to construct a rich knowledge graph.
 
 ---
 
 ## 🏗️ Architecture
 
-```mermaid
-graph TD
-    A[Documents/CSVs] --> B[Docling / Pandas]
-    B --> C{Chunking}
-    C --> D[Ollama Embeddings]
-    C --> E[Ollama Triplet Extraction]
-    D --> F[(PostgreSQL + pgvector)]
-    E --> G[(Neo4j Knowledge Graph)]
-    H[User Query] --> I[Hybrid Search Engine]
-    I --> F
-    I --> G
-    F --> J[RAG Context]
-    G --> J
-    J --> K[Ollama LLM Response]
-    K --> L[Streamlit UI]
-```
+1.  **Ingestion Layer**: 
+    *   Documents are parsed and chunked.
+    *   **Vector Path**: Chunks are embedded using `nomic-embed-text` and stored in **PostgreSQL**.
+    *   **Graph Path**: Entities and relationships are extracted using an LLM and stored in **Neo4j**.
+2.  **Retrieval Layer**:
+    *   **Vector Search**: Finds conceptually similar text chunks.
+    *   **Graph Search**: Traverses the graph to find related entities (e.g., "What side effects does the medication prescribed to Patient X have?").
+3.  **Generation Layer**:
+    *   The LLM (`gpt-oss:20b-cloud` or configured model) synthesizes the answer using context from both sources.
 
 ---
 
-## 🛠️ Setup Instructions
+## 🛠️ Prerequisites
 
-### 1. Prerequisites
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [Ollama](https://ollama.ai/)
-- Python 3.10+
+Ensure you have the following installed:
 
-### 2. Model Installation
-Pull the required models via Ollama:
+*   **Docker Desktop** (for PostgreSQL and Neo4j)
+*   **Python 3.10+**
+*   **[Ollama](https://ollama.com/)** running locally
+
+---
+
+## 📦 Installation
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/cmaxtt/MYGRAPHRAG.git
+cd MYGRAPHRAG
+```
+
+### 2. Set Up Environment
+Create a `.env` file from the example:
+```bash
+cp .env.example .env
+```
+*Edit `.env` if you need to change database passwords or Ollama models.*
+
+### 3. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Start Database Services
+Launch PostgreSQL and Neo4j using Docker Compose:
+```bash
+docker-compose up -d
+```
+
+### 5. Initialize Databases
+Create the necessary schemas and indexes:
+```bash
+python db.py
+```
+
+### 6. Pull Ollama Models
+Make sure Ollama is running, then pull the required models (as defined in `config.py`):
 ```bash
 ollama pull gpt-oss:20b-cloud
 ollama pull nomic-embed-text
 ```
-
-### 3. Environment Configuration
-1. Clone the repository and install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Copy `.env.example` to `.env` and adjust settings if necessary:
-   ```bash
-   cp .env.example .env
-   ```
-3. Start the database services:
-   ```bash
-   docker-compose up -d
-   ```
-4. Initialize database schemas:
-   ```bash
-   python db.py
-   ```
+*(Note: If `gpt-oss:20b-cloud` is not available, update `LLM_MODEL` in `config.py` to a standard model like `llama3` or `mistral`.)*
 
 ---
 
-## 📂 Usage
+## 🖥️ Usage
 
 ### Running the Web Application
+Launch the Streamlit interface:
 ```bash
 streamlit run app.py
 ```
+Access the app at `http://localhost:8501`.
 
-### Ingesting Demo Clinical Data
-To populate the system with the included clinical dataset:
+### Ingesting Clinical Demo Data
+To populate the graph with the provided sample clinical dataset (Patients, Doctors, Medications):
 ```bash
 python ingest_clinical.py
 ```
 
-### Utility Scripts
-All maintenance scripts are located in the `scripts/` directory:
-- `clear_db.py`: Wipe all data from Neo4j and PostgreSQL.
-- `check_db_status.py`: Verify connectivity and record counts.
+### Using the UI
+1.  **Chat Tab**: Ask questions like "Who is Dr. Smith treating?" or "What are the side effects of Metformin?".
+2.  **Knowledge Graph Tab**: Visualize the nodes and edges created from your data.
+3.  **Sidebar**: Upload your own documents (PDF, TXT, etc.) to expand the knowledge base.
 
 ---
 
-## 🧪 Technical Stack
-- **Document Processing**: [Docling](https://github.com/DS4SD/docling)
-- **Vector Store**: [PostgreSQL](https://www.postgresql.org/) + [pgvector](https://github.com/pgvector/pgvector)
-- **Graph Database**: [Neo4j](https://neo4j.com/)
-- **LLM/Embeddings**: [Ollama](https://ollama.com/)
-- **UI Framework**: [Streamlit](https://streamlit.io/)
+## 📂 Project Structure
+
+```
+.
+├── app.py                  # Main Streamlit Web Application
+├── config.py               # Central configuration (env vars, constants)
+├── db.py                   # Database connection manager (Neo4j & Postgres)
+├── ingest.py               # Generic document ingestor
+├── ingest_clinical.py      # Specialized clinical CSV ingestor
+├── search.py               # Hybrid search engine logic
+├── base_ingestor.py        # Base class for ingestion strategies
+├── docker-compose.yml      # Container definition for DBs
+├── requirements.txt        # Python dependencies
+├── data/
+│   └── clinical/           # Sample CSV datasets
+└── scripts/                # Utility scripts
+```
+
+## ⚙️ Configuration
+
+The `config.py` file controls the system behavior. Key settings include:
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `LLM_MODEL` | Model for generation & extraction | `gpt-oss:20b-cloud` |
+| `EMBED_MODEL` | Model for vector embeddings | `nomic-embed-text` |
+| `VECTOR_TOP_K` | Number of vector chunks to retrieve | `5` |
+| `GRAPH_TOP_K` | Number of graph entities to explore | `10` |
+| `PG_HOST` | PostgreSQL Host | `127.0.0.1` |
+| `NEO4J_URI` | Neo4j Connection URI | `bolt://127.0.0.1:7687` |
 
 ---
-*Created by CompuMax - Advanced Agentic Coding 2025*
 
+## 🤝 Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes.
+
+---
+
+*Verified by CompuMax Agentic Coding Team*

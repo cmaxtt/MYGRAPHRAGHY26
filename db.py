@@ -3,21 +3,29 @@ import psycopg2
 from psycopg2 import pool
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
+import logging
 import time
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+# Configuration
+from config import settings
+
 # PostgreSQL configuration
-PG_HOST = os.getenv("PG_HOST", "127.0.0.1")
-PG_PORT = os.getenv("PG_PORT", "5432")
-PG_USER = os.getenv("PG_USER", "postgres")
-PG_PWD = os.getenv("PG_PWD", "password")
-PG_DB = os.getenv("PG_DB", "graphrag")
+PG_HOST = settings.PG_HOST
+PG_PORT = settings.PG_PORT
+PG_USER = settings.PG_USER
+PG_PWD = settings.PG_PWD
+PG_DB = settings.PG_DB
 
 # Neo4j configuration
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PWD = os.getenv("NEO4J_PWD", "password")
+NEO4J_URI = settings.NEO4J_URI
+NEO4J_USER = settings.NEO4J_USER
+NEO4J_PWD = settings.NEO4J_PWD
 
 class Database:
     _pg_pool = None
@@ -57,10 +65,10 @@ class Database:
                 if self.neo4j_driver is None:
                     self.neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PWD))
                     self.neo4j_driver.verify_connectivity()
-                    print("Connected to Neo4j")
+                    logger.info("Connected to Neo4j")
                 return self.neo4j_driver
             except Exception as e:
-                print(f"Error connecting to Neo4j: {e}. Retrying...")
+                logger.error(f"Error connecting to Neo4j: {e}. Retrying...")
                 time.sleep(2)
                 retries -= 1
         raise Exception("Failed to connect to Neo4j")
@@ -81,6 +89,7 @@ class Database:
                             embedding vector(768)
                         );
                     """)
+                    cur.execute("CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw_idx ON chunks USING hnsw (embedding vector_cosine_ops)")
             finally:
                 self.release_pg(conn)
         
@@ -91,6 +100,11 @@ class Database:
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
             session.run("CREATE INDEX IF NOT EXISTS FOR (e:Entity) ON (e.type)")
             session.run("CREATE FULLTEXT INDEX entity_names_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]")
+            session.run("CREATE FULLTEXT INDEX patient_names_index IF NOT EXISTS FOR (n:Patient) ON EACH [n.name]")
+            session.run("CREATE FULLTEXT INDEX doctor_names_index IF NOT EXISTS FOR (n:Doctor) ON EACH [n.name]")
+            session.run("CREATE FULLTEXT INDEX medication_names_index IF NOT EXISTS FOR (n:Medication) ON EACH [n.name]")
+            session.run("CREATE FULLTEXT INDEX condition_names_index IF NOT EXISTS FOR (n:Condition) ON EACH [n.name]")
+            session.run("CREATE FULLTEXT INDEX visit_ids_index IF NOT EXISTS FOR (n:Visit) ON EACH [n.visitId]")
             
             # Clinical Specific constraints
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Patient) REQUIRE p.patientId IS UNIQUE")
@@ -109,3 +123,4 @@ if __name__ == "__main__":
     db = Database()
     db.init_db()
     db.close()
+# Test comment

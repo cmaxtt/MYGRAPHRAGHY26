@@ -1,0 +1,10 @@
+docling
+streamlit
+psycopg2-binary
+neo4j
+ollama
+pgvector
+pandas
+python-dotenv
+streamlit-agraph
+pyvis
