@@ -1,10 +1,8 @@
 import os
-import psycopg2
-from psycopg2 import pool
-from neo4j import GraphDatabase
-from dotenv import load_dotenv
 import logging
+import asyncio
 import time
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -27,100 +25,109 @@ NEO4J_URI = settings.NEO4J_URI
 NEO4J_USER = settings.NEO4J_USER
 NEO4J_PWD = settings.NEO4J_PWD
 
+import asyncpg
+from neo4j import AsyncGraphDatabase
+from config import settings
+import logging
+import asyncio
+
+logger = logging.getLogger(__name__)
+
 class Database:
     _pg_pool = None
+    _neo4j_driver = None
 
     def __init__(self):
+        self.pg_pool = None
         self.neo4j_driver = None
-        self._init_pg_pool()
 
-    def _init_pg_pool(self):
+    async def get_pg_pool(self):
         if Database._pg_pool is None:
             try:
-                Database._pg_pool = pool.SimpleConnectionPool(
-                    1, 10,
-                    host=PG_HOST,
-                    port=PG_PORT,
-                    user=PG_USER,
-                    password=PG_PWD,
-                    dbname=PG_DB
+                Database._pg_pool = await asyncpg.create_pool(
+                    host=settings.PG_HOST,
+                    port=settings.PG_PORT,
+                    user=settings.PG_USER,
+                    password=settings.PG_PWD,
+                    database=settings.PG_DB,
+                    min_size=1,
+                    max_size=10
                 )
-                print("PostgreSQL connection pool initialized")
+                logger.info("Async PostgreSQL pool initialized")
             except Exception as e:
-                print(f"Error initializing PG pool: {e}")
+                logger.error(f"Error initializing PG pool: {e}")
+                raise
+        return Database._pg_pool
 
-    def connect_pg(self):
-        if Database._pg_pool:
-            return Database._pg_pool.getconn()
-        return None
-
-    def release_pg(self, conn):
-        if Database._pg_pool and conn:
-            Database._pg_pool.putconn(conn)
-
-    def connect_neo4j(self):
-        retries = 5
-        while retries > 0:
+    async def get_neo4j_driver(self):
+        if Database._neo4j_driver is None:
             try:
-                if self.neo4j_driver is None:
-                    self.neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PWD))
-                    self.neo4j_driver.verify_connectivity()
-                    logger.info("Connected to Neo4j")
-                return self.neo4j_driver
+                Database._neo4j_driver = AsyncGraphDatabase.driver(
+                    settings.NEO4J_URI, 
+                    auth=(settings.NEO4J_USER, settings.NEO4J_PWD)
+                )
+                await Database._neo4j_driver.verify_connectivity()
+                logger.info("Async Neo4j driver initialized")
             except Exception as e:
-                logger.error(f"Error connecting to Neo4j: {e}. Retrying...")
-                time.sleep(2)
-                retries -= 1
-        raise Exception("Failed to connect to Neo4j")
+                logger.error(f"Error initializing Neo4j driver: {e}")
+                raise
+        return Database._neo4j_driver
 
-    def init_db(self):
+    async def init_db(self):
         # Initialize PostgreSQL
-        conn = self.connect_pg()
-        if conn:
-            try:
-                conn.autocommit = True
-                with conn.cursor() as cur:
-                    cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS chunks (
-                            id SERIAL PRIMARY KEY,
-                            content TEXT,
-                            metadata JSONB,
-                            embedding vector(768)
-                        );
-                    """)
-                    cur.execute("CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw_idx ON chunks USING hnsw (embedding vector_cosine_ops)")
-            finally:
-                self.release_pg(conn)
+        pool = await self.get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id SERIAL PRIMARY KEY,
+                    content TEXT,
+                    metadata JSONB,
+                    embedding vector(768) -- adjust dimensions if needed for DeepSeek/OpenAI
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw_idx ON chunks USING hnsw (embedding vector_cosine_ops)")
         
         # Initialize Neo4j constraints
-        driver = self.connect_neo4j()
-        with driver.session() as session:
-            # General Entity constraints (from original)
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
-            session.run("CREATE INDEX IF NOT EXISTS FOR (e:Entity) ON (e.type)")
-            session.run("CREATE FULLTEXT INDEX entity_names_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]")
-            session.run("CREATE FULLTEXT INDEX patient_names_index IF NOT EXISTS FOR (n:Patient) ON EACH [n.name]")
-            session.run("CREATE FULLTEXT INDEX doctor_names_index IF NOT EXISTS FOR (n:Doctor) ON EACH [n.name]")
-            session.run("CREATE FULLTEXT INDEX medication_names_index IF NOT EXISTS FOR (n:Medication) ON EACH [n.name]")
-            session.run("CREATE FULLTEXT INDEX condition_names_index IF NOT EXISTS FOR (n:Condition) ON EACH [n.name]")
-            session.run("CREATE FULLTEXT INDEX visit_ids_index IF NOT EXISTS FOR (n:Visit) ON EACH [n.visitId]")
+        driver = await self.get_neo4j_driver()
+        async with driver.session() as session:
+            # General Entity constraints
+            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
+            await session.run("CREATE INDEX IF NOT EXISTS FOR (e:Entity) ON (e.type)")
+            await session.run("CREATE FULLTEXT INDEX entity_names_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]")
             
             # Clinical Specific constraints
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Patient) REQUIRE p.patientId IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (d:Doctor) REQUIRE d.doctorId IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (m:Medication) REQUIRE m.medicationId IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Condition) REQUIRE c.conditionId IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (v:Visit) REQUIRE v.visitId IS UNIQUE")
+            for label, prop in [('Patient', 'patientId'), ('Doctor', 'doctorId'), 
+                              ('Medication', 'medicationId'), ('Condition', 'conditionId'), 
+                              ('Visit', 'visitId')]:
+                await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:" + label + ") REQUIRE n." + prop + " IS UNIQUE")  # type: ignore
 
-    def close(self):
+    async def health_check(self) -> bool:
+        """Check health of both PostgreSQL and Neo4j connections."""
+        try:
+            # Check PostgreSQL
+            pool = await self.get_pg_pool()
+            async with pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            
+            # Check Neo4j
+            driver = await self.get_neo4j_driver()
+            await driver.verify_connectivity()
+            
+            return True
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return False
+
+    async def close(self):
         if Database._pg_pool:
-            Database._pg_pool.closeall()
-        if self.neo4j_driver:
-            self.neo4j_driver.close()
+            await Database._pg_pool.close()
+        if Database._neo4j_driver:
+            await Database._neo4j_driver.close()
 
 if __name__ == "__main__":
-    db = Database()
-    db.init_db()
-    db.close()
-# Test comment
+    async def main():
+        db = Database()
+        await db.init_db()
+        await db.close()
+    asyncio.run(main())

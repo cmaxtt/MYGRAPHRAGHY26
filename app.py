@@ -5,7 +5,8 @@ import streamlit as st
 import os
 import tempfile
 import logging
-import ollama
+import asyncio
+from typing import List, Callable, Optional
 
 from ingest import Ingestor
 from search import SearchEngine
@@ -60,32 +61,26 @@ st.markdown("""
     """)
 
 
-def _check_ollama_model(model_name: str):
-    """Check if Ollama model is available."""
+# Helper for running async functions
+def run_async(coro):
     try:
-        models = ollama.list()
-        available = any(m["model"] == model_name for m in models["models"])
-        if not available:
-            logger.warning(f"Ollama model '{model_name}' not found. Please pull it.")
-    except Exception as e:
-        logger.error(f"Failed to check Ollama models: {e}")
+        return asyncio.run(coro)
+    except RuntimeError:
+        # If loop is already running (e.g. inside another async context), 
+        # we might need to use existing loop.
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(coro)
 
 
 @st.cache_resource
 def get_ingestor():
     """Get cached ingestor instance."""
-    # Check required Ollama models
-    _check_ollama_model(settings.EMBED_MODEL)
-    _check_ollama_model(settings.LLM_MODEL)
     return Ingestor()
 
 
 @st.cache_resource
 def get_search_engine():
     """Get cached search engine instance."""
-    # Check required Ollama models
-    _check_ollama_model(settings.EMBED_MODEL)
-    _check_ollama_model(settings.LLM_MODEL)
     return SearchEngine()
 
 
@@ -100,19 +95,29 @@ if "chat_history" not in st.session_state:
 # Sidebar for information and file upload
 with st.sidebar:
     st.title("⚙️ System Status")
-    st.info(f"**LLM Model:** `{search_engine.llm_model}`\n\n**Embed Model:** `{search_engine.embed_model}`")
+    chat_model = getattr(settings, "DEEPSEEK_MODEL_CHAT", "deepseek-chat (default)")
+    st.info(f"**API Provider:** DeepSeek\n\n**Chat Model:** `{chat_model}`")
     
     # Database Stats
-    try:
-        nodes_count, rels_count = 0, 0
-        driver = search_engine.db.connect_neo4j()
-        with driver.session() as session:
-            nodes_count = session.run("MATCH (n) RETURN count(n) as count").single()["count"]
-            rels_count = session.run("MATCH ()-[r]->() RETURN count(r) as count").single()["count"]
-        st.success(f"📊 **Database Stats:**\n- Nodes: `{nodes_count}`\n- Relationships: `{rels_count}`")
-    except Exception as e:
-        st.error("Could not connect to Knowledge Graph for stats")
-        logger.error("Could not connect to Knowledge Graph for stats", exc_info=e)
+    if st.button("Refresh Stats"):
+        try:
+            async def get_stats():
+                driver = await search_engine.db.get_neo4j_driver()
+                async with driver.session() as session:
+                    nodes_res = await session.run("MATCH (n) RETURN count(n) as count")
+                    n_rec = await nodes_res.single()
+                    nodes_count = n_rec["count"] if n_rec else 0
+                    
+                    rels_res = await session.run("MATCH ()-[r]->() RETURN count(r) as count")
+                    r_rec = await rels_res.single()
+                    rels_count = r_rec["count"] if r_rec else 0
+                return nodes_count, rels_count
+
+            nodes_count, rels_count = run_async(get_stats())
+            st.success(f"📊 **Database Stats:**\n- Nodes: `{nodes_count}`\n- Relationships: `{rels_count}`")
+        except Exception as e:
+            st.error("Could not connect to Knowledge Graph for stats")
+            logger.error("Could not connect to Knowledge Graph for stats", exc_info=e)
     
     st.divider()
     
@@ -143,37 +148,71 @@ with st.sidebar:
             st.error("No valid files to process")
         else:
             with st.status("Processing documents...", expanded=True) as status:
-                for uploaded_file in valid_files:
-                    st.write(f"Processing `{uploaded_file.name}`...")
+                for file_idx, uploaded_file in enumerate(valid_files):
+                    st.write(f"File {file_idx+1}/{len(valid_files)}: Processing `{uploaded_file.name}`...")
                     # Save to temp file
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp:
                         tmp.write(uploaded_file.getvalue())
                         tmp_path = tmp.name
                     
+                    # Create progress elements for this file
+                    chunk_progress_bar = st.progress(0)
+                    batch_info = st.empty()
+                    
+                    def create_progress_callback(progress_bar, info_placeholder, filename):
+                        def callback(progress_data):
+                            if "total_chunks" in progress_data and "chunks_processed" in progress_data:
+                                # Update progress bar
+                                total = progress_data["total_chunks"]
+                                processed = progress_data["chunks_processed"]
+                                if total > 0:
+                                    progress_bar.progress(processed / total)
+                                # Update batch info
+                                batch_num = progress_data.get("current_batch", 0)
+                                total_batches = progress_data.get("total_batches", 1)
+                                batch_size = progress_data.get("batch_size", 0)
+                                info_text = f"Batch {batch_num}/{total_batches} ({batch_size} chunks)"
+                                if "duration" in progress_data:
+                                    info_text += f" | {progress_data['duration']:.2f}s ({progress_data.get('chunks_per_second', 0):.1f} chunks/s)"
+                                info_placeholder.markdown(info_text)
+                            elif "error" in progress_data:
+                                info_placeholder.error(f"Error in batch {progress_data.get('batch_index', '?')}: {progress_data['error']}")
+                        return callback
+                    
+                    progress_callback = create_progress_callback(chunk_progress_bar, batch_info, uploaded_file.name)
+                    
                     try:
-                        ingestor.process_file(tmp_path)
+                        # Async process with progress callback
+                        run_async(ingestor.process_file(tmp_path, progress_callback))
                         st.success(f"Finished `{uploaded_file.name}`")
                     except Exception as e:
                         st.error(f"Error processing `{uploaded_file.name}`: {e}")
                         logger.error(f"Error processing file {uploaded_file.name}", exc_info=e)
                     finally:
-                        os.unlink(tmp_path)
+                        # Clean up progress elements
+                        chunk_progress_bar.empty()
+                        batch_info.empty()
+                        try:
+                            os.unlink(tmp_path)
+                        except:
+                            pass
                 status.update(label="Ingestion Complete!", state="complete", expanded=False)
 
     if st.button("🗑️ Reset Databases", type="secondary"):
         if st.checkbox("Confirm deletion of ALL data?"):
             try:
-                # Reset PG
-                conn = search_engine.db.connect_pg()
-                with conn.cursor() as cur:
-                    cur.execute("TRUNCATE TABLE chunks RESTART IDENTITY")
-                search_engine.db.release_pg(conn)
-                
-                # Reset Neo4j
-                driver = search_engine.db.connect_neo4j()
-                with driver.session() as session:
-                    session.run("MATCH (n) DETACH DELETE n")
-                
+                async def reset_db():
+                    # Reset PG
+                    pool = await search_engine.db.get_pg_pool()
+                    async with pool.acquire() as conn:
+                        await conn.execute("TRUNCATE TABLE chunks RESTART IDENTITY")
+                    
+                    # Reset Neo4j
+                    driver = await search_engine.db.get_neo4j_driver()
+                    async with driver.session() as session:
+                        await session.run("MATCH (n) DETACH DELETE n")
+
+                run_async(reset_db())
                 st.success("All data cleared successfully!")
                 st.rerun()
             except Exception as e:
@@ -199,7 +238,8 @@ with tab1:
         with st.chat_message("assistant"):
             with st.spinner("Searching and generating answer..."):
                 try:
-                    result = search_engine.hybrid_search(prompt)
+                    # Async search
+                    result = run_async(search_engine.hybrid_search(prompt))
                     answer = result["answer"]
                     sources = result["sources"]
                     
@@ -222,27 +262,28 @@ with tab2:
         st.rerun()
 
     with st.spinner("Loading graph data..."):
-        nodes_data, edges_data = search_engine.get_all_graph_data()
-        
-        if not nodes_data:
-            st.info("No data in the Knowledge Graph yet. Upload documents to see the graph!")
-        else:
-            nodes = [Node(id=n["id"], label=n["label"], size=25, color="#007bff") for n in nodes_data]
-            edges = [Edge(source=e["source"], label=e["label"], target=e["target"]) for e in edges_data]
+        try:
+            nodes_data, edges_data = run_async(search_engine.get_all_graph_data())
             
-            config = Config(
-                width=1000, 
-                height=600, 
-                directed=True, 
-                nodeHighlightBehavior=True, 
-                highlightColor="#F7A7A6",
-                collapsible=True,
-                node={'labelProperty': 'label'},
-                link={'labelProperty': 'label', 'renderLabel': True}
-            )
-            
-            agraph(nodes=nodes, edges=edges, config=config)
+            if not nodes_data:
+                st.info("No data in the Knowledge Graph yet. Upload documents to see the graph!")
+            else:
+                nodes = [Node(id=n["id"], label=n["label"], size=25, color="#007bff") for n in nodes_data]
+                edges = [Edge(source=e["source"], label=e["label"], target=e["target"]) for e in edges_data]
+                
+                config = Config(
+                    width=1000, 
+                    height=600, 
+                    directed=True, 
+                    nodeHighlightBehavior=True, 
+                    highlightColor="#F7A7A6",
+                    collapsible=True,
+                    node={'labelProperty': 'label'},
+                    link={'labelProperty': 'label', 'renderLabel': True}
+                )
+                
+                agraph(nodes=nodes, edges=edges, config=config)
+        except Exception as e:
+             st.error(f"Error loading graph: {e}")
 
-# Cleanup on app close (if possible) or session end
-# Note: Database handles are managed in session state, 
-# but permanent close would happen when the process dies.
+# Cleanup (not strictly necessary as session state manages objects, but good practice if convenient)

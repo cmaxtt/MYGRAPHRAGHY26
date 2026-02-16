@@ -9,7 +9,7 @@ A high-performance, privacy-focused **Graph Retrieval-Augmented Generation (Grap
 ## 🚀 Key Features
 
 *   **Hybrid Search Engine**: Synergizes **pgvector** (PostgreSQL) for semantic similarity and **Neo4j** for graph traversals to answer complex queries.
-*   **Local & Private**: Powered by **Ollama**, ensuring all LLM inference and embeddings happen on your machine. No data leaves your network.
+*   **Efficient & Scalable**: Uses **DeepSeek API** for LLM reasoning and **local SentenceTransformer** for embeddings, balancing performance and privacy.
 *   **Multi-Modal Ingestion**: 
     *   **Clinical Data**: specialized ingestion for CSV patient records, doctor interactions, and prescriptions.
     *   **Document Uploads**: Support for PDF, DOCX, XLSX, CSV, and TXT files via the Web UI.
@@ -41,7 +41,7 @@ Ensure you have the following installed:
 
 *   **Docker Desktop** (for PostgreSQL and Neo4j)
 *   **Python 3.10+**
-*   **[Ollama](https://ollama.com/)** running locally
+*   **DeepSeek API Key** (get from [DeepSeek Platform](https://platform.deepseek.com))
 
 ---
 
@@ -58,7 +58,7 @@ Create a `.env` file from the example:
 ```bash
 cp .env.example .env
 ```
-*Edit `.env` if you need to change database passwords or Ollama models.*
+*Edit `.env` to set your DeepSeek API key and database credentials.*
 
 ### 3. Install Dependencies
 ```bash
@@ -77,13 +77,8 @@ Create the necessary schemas and indexes:
 python db.py
 ```
 
-### 6. Pull Ollama Models
-Make sure Ollama is running, then pull the required models (as defined in `config.py`):
-```bash
-ollama pull gpt-oss:20b-cloud
-ollama pull nomic-embed-text
-```
-*(Note: If `gpt-oss:20b-cloud` is not available, update `LLM_MODEL` in `config.py` to a standard model like `llama3` or `mistral`.)*
+### 6. Configure API Key
+Ensure your DeepSeek API key is set in `.env`. The embedding model (SentenceTransformer) will download automatically on first use.
 
 ---
 
@@ -133,8 +128,9 @@ The `config.py` file controls the system behavior. Key settings include:
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `LLM_MODEL` | Model for generation & extraction | `gpt-oss:20b-cloud` |
-| `EMBED_MODEL` | Model for vector embeddings | `nomic-embed-text` |
+| `DEEPSEEK_MODEL_CHAT` | Model for chat completion | `deepseek-chat` |
+| `DEEPSEEK_MODEL_REASONER` | Model for reasoning tasks | `deepseek-reasoner` |
+| `DEEPSEEK_MODEL_EMBED` | Local embedding model | `sentence-transformers/all-mpnet-base-v2` |
 | `VECTOR_TOP_K` | Number of vector chunks to retrieve | `5` |
 | `GRAPH_TOP_K` | Number of graph entities to explore | `10` |
 | `PG_HOST` | PostgreSQL Host | `127.0.0.1` |

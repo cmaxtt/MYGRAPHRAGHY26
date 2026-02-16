@@ -24,9 +24,14 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PWD: str = "password"
 
-    # Ollama models
-    EMBED_MODEL: str = "nomic-embed-text"
-    LLM_MODEL: str = "gpt-oss:20b-cloud"
+    # DeepSeek API
+    DEEPSEEK_API_KEY: Optional[str] = None
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    DEEPSEEK_MODEL_EMBED: str = "sentence-transformers/all-mpnet-base-v2" # Using local high-quality model (768d)
+    DEEPSEEK_MODEL_CHAT: str = "deepseek-chat"
+    DEEPSEEK_MODEL_REASONER: str = "deepseek-reasoner"
+
+
 
     # Ingestion settings
     MAX_WORKERS: Optional[int] = None  # default to min(32, cpu_count + 4)
