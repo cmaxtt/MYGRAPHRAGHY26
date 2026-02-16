@@ -43,3 +43,9 @@ uploads/
 
 # Windows reserved/garbage
 nul
+
+# Development scripts
+add_*.py
+modify_*.py
+fix_*.py
+update_*.py
