@@ -1,6 +1,7 @@
 """
 Configuration settings for GraphRAG using Pydantic Settings.
 """
+
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,7 +17,7 @@ class Settings(BaseSettings):
     PG_HOST: str = "127.0.0.1"
     PG_PORT: str = "5432"
     PG_USER: str = "postgres"
-    PG_PWD: str = "password" # creating a default for dev, but should be overridden
+    PG_PWD: str = "password"  # creating a default for dev, but should be overridden
     PG_DB: str = "graphrag"
 
     # Neo4j
@@ -27,11 +28,11 @@ class Settings(BaseSettings):
     # DeepSeek API
     DEEPSEEK_API_KEY: Optional[str] = None
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL_EMBED: str = "sentence-transformers/all-mpnet-base-v2" # Using local high-quality model (768d)
+    DEEPSEEK_MODEL_EMBED: str = (
+        "sentence-transformers/all-mpnet-base-v2"  # Using local high-quality model (768d)
+    )
     DEEPSEEK_MODEL_CHAT: str = "deepseek-chat"
     DEEPSEEK_MODEL_REASONER: str = "deepseek-reasoner"
-
-
 
     # Ingestion settings
     MAX_WORKERS: Optional[int] = None  # default to min(32, cpu_count + 4)

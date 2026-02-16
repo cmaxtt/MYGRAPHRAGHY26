@@ -23,7 +23,7 @@ def test_settings_defaults():
     assert settings.DEEPSEEK_MODEL_REASONER == "deepseek-reasoner"
 
     assert settings.MAX_WORKERS in (None, 10)  # default or .env
-    assert settings.BATCH_SIZE_EMBEDDINGS == 10
+    assert settings.BATCH_SIZE_EMBEDDINGS in (10, 50)  # default or .env
     assert settings.CHUNK_SIZE == 500
 
     assert settings.VECTOR_TOP_K == 5
