@@ -10,7 +10,7 @@ import asyncio
 
 
 from ingest import Ingestor
-from search import SearchEngine
+from search import SearchEngine, QuerySearchEngine
 from streamlit_agraph import agraph, Node, Edge, Config
 from config import settings
 
@@ -62,14 +62,25 @@ st.markdown("""
     """)
 
 
-# Helper for running async functions
+# Helper for running async functions in Streamlit
 def run_async(coro):
     try:
-        return asyncio.run(coro)
-    except RuntimeError:
-        # If loop is already running (e.g. inside another async context),
-        # we might need to use existing loop.
+        # Try to use existing event loop
         loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # No event loop in current thread, create one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    if loop.is_running():
+        # If loop is already running (e.g., in interactive environment),
+        # we need to handle it differently
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(lambda: loop.run_until_complete(coro))
+            return future.result()
+    else:
+        # Run the coroutine in the current loop
         return loop.run_until_complete(coro)
 
 
@@ -85,9 +96,16 @@ def get_search_engine():
     return SearchEngine()
 
 
+@st.cache_resource
+def get_query_search_engine():
+    """Get cached query search engine instance."""
+    return QuerySearchEngine()
+
+
 # Initialize components
 ingestor = get_ingestor()
 search_engine = get_search_engine()
+query_search_engine = get_query_search_engine()
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -250,7 +268,7 @@ with st.sidebar:
 
 
 # Main area with Tabs
-tab1, tab2 = st.tabs(["💬 Chat", "🕸️ Knowledge Graph"])
+tab1, tab2, tab3 = st.tabs(["💬 Chat", "🕸️ Knowledge Graph", "🗃️ SQL Query"])
 
 with tab1:
     st.header("Chat with your Knowledge Base")
@@ -330,5 +348,174 @@ with tab2:
                 agraph(nodes=nodes, edges=edges, config=config)
         except Exception as e:
             st.error(f"Error loading graph: {e}")
+
+with tab3:
+    st.header("🗃️ SQL Query Retrieval")
+    st.markdown("""
+    Search for SQL queries using natural language. Queries are automatically extracted from uploaded documents.
+    You can filter by query type or specific tables.
+    """)
+    
+    # Initialize session state for query history
+    if "sql_query_history" not in st.session_state:
+        st.session_state.sql_query_history = []
+    if "sql_search_results" not in st.session_state:
+        st.session_state.sql_search_results = []
+    
+    # Sidebar filters
+    with st.sidebar:
+        st.subheader("SQL Query Filters")
+        
+        # Get available query types and tables
+        try:
+            query_types = run_async(query_search_engine.get_all_query_types())
+            tables = run_async(query_search_engine.get_all_tables())
+        except Exception as e:
+            st.error(f"Error loading filters: {e}")
+            query_types = []
+            tables = []
+        
+        selected_type = st.selectbox(
+            "Query Type",
+            options=["Any"] + query_types,
+            index=0
+        )
+        
+        selected_tables = st.multiselect(
+            "Filter by Tables",
+            options=tables
+        )
+        
+        limit = st.slider("Max Results", 1, 20, 5)
+        
+        if st.button("🔄 Refresh Filters"):
+            st.rerun()
+    
+    # Main search area
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_query = st.text_input(
+            "Ask about SQL queries or database schema",
+            placeholder="e.g., 'How to calculate total sales per customer?'"
+        )
+    with col2:
+        generate_sql = st.checkbox("Generate SQL", value=True)
+    
+    # Search button
+    if st.button("🔍 Search SQL Queries", type="primary") and search_query:
+        with st.spinner("Searching for relevant SQL queries..."):
+            try:
+                results = run_async(query_search_engine.search_sql_queries(
+                    query=search_query,
+                    limit=limit,
+                    query_type=selected_type if selected_type != "Any" else None,
+                    tables=selected_tables if selected_tables else None
+                ))
+                
+                st.session_state.sql_search_results = results
+                st.session_state.sql_query_history.insert(0, {
+                    "query": search_query,
+                    "timestamp": "now",
+                    "results_count": len(results)
+                })
+                
+                st.success(f"Found {len(results)} relevant SQL queries")
+                
+            except Exception as e:
+                st.error(f"Error searching SQL queries: {e}")
+                logger.error("Error searching SQL queries", exc_info=e)
+    
+    # Display search results
+    if st.session_state.sql_search_results:
+        st.subheader("📋 Matching SQL Queries")
+        
+        for i, result in enumerate(st.session_state.sql_search_results):
+            with st.expander(f"Query {i+1}: Similarity {result['similarity']:.3f}"):
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    st.markdown("**SQL Query:**")
+                    st.code(result["sql_query"], language="sql")
+                    
+                    if result["tables"]:
+                        st.markdown(f"**Tables:** `{', '.join(result['tables'])}`")
+                    
+                    if result.get("table_links", {}).get("joins"):
+                        st.markdown("**Join Relationships:**")
+                        for join in result["table_links"]["joins"]:
+                            st.text(f"{join.get('from_table', '?')} ↔ {join.get('to_table', '?')}")
+                
+                with col2:
+                    st.markdown("**Metadata**")
+                    st.metric("Similarity", f"{result['similarity']:.3f}")
+                    
+                    if st.button(f"View Details", key=f"details_{i}"):
+                        try:
+                            details = run_async(query_search_engine.get_sql_query_details(result["id"]))
+                            st.json(details)
+                        except Exception as e:
+                            st.error(f"Error fetching details: {e}")
+        
+        # Option to generate new SQL from natural language
+        if generate_sql:
+            st.divider()
+            st.subheader("🤖 Generate New SQL Query")
+            
+            if st.button("Generate SQL from Natural Language", type="secondary"):
+                with st.spinner("Generating SQL using LLM..."):
+                    try:
+                        generated = run_async(
+                            query_search_engine.generate_sql_from_natural_language(
+                                query=search_query,
+                                context_queries=st.session_state.sql_search_results[:3]
+                            )
+                        )
+                        
+                        st.markdown("**Generated SQL Query:**")
+                        st.code(generated.get("sql_query", ""), language="sql")
+                        
+                        if generated.get("explanation"):
+                            st.markdown("**Explanation:**")
+                            st.info(generated["explanation"])
+                        
+                        if generated.get("tables"):
+                            st.markdown(f"**Tables:** `{', '.join(generated['tables'])}`")
+                        
+                        if generated.get("columns"):
+                            st.markdown(f"**Columns:** `{', '.join(generated['columns'])}`")
+                        
+                    except Exception as e:
+                        st.error(f"Error generating SQL: {e}")
+    
+    # Show query statistics
+    st.divider()
+    st.subheader("📊 Query Database Statistics")
+    
+    if st.button("📈 Load Statistics"):
+        with st.spinner("Loading statistics..."):
+            try:
+                stats = run_async(query_search_engine.get_query_statistics())
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Queries", stats.get("total_queries", 0))
+                
+                with col2:
+                    st.metric("Query Types", len(stats.get("queries_by_type", {})))
+                
+                with col3:
+                    st.metric("Recent Queries", len(stats.get("recent_queries", [])))
+                
+                if stats.get("queries_by_type"):
+                    st.markdown("**Queries by Type:**")
+                    for qtype, count in stats["queries_by_type"].items():
+                        st.progress(count / max(stats["queries_by_type"].values()), text=f"{qtype}: {count}")
+                
+                if stats.get("recent_queries"):
+                    st.markdown("**Recent Queries:**")
+                    for q in stats["recent_queries"]:
+                        st.caption(f"{q['created_at']}: {q['question']}")
+                        
+            except Exception as e:
+                st.error(f"Error loading statistics: {e}")
 
 # Cleanup (not strictly necessary as session state manages objects, but good practice if convenient)

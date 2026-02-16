@@ -17,13 +17,13 @@ class Settings(BaseSettings):
     PG_HOST: str = "127.0.0.1"
     PG_PORT: str = "5432"
     PG_USER: str = "postgres"
-    PG_PWD: str = "password"  # creating a default for dev, but should be overridden
+    PG_PWD: Optional[str] = None  # Must be set in .env
     PG_DB: str = "graphrag"
 
     # Neo4j
     NEO4J_URI: str = "bolt://127.0.0.1:7687"
     NEO4J_USER: str = "neo4j"
-    NEO4J_PWD: str = "password"
+    NEO4J_PWD: Optional[str] = None  # Must be set in .env
 
     # DeepSeek API
     DEEPSEEK_API_KEY: Optional[str] = None

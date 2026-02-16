@@ -18,6 +18,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from base_ingestor import BaseIngestor
 from config import settings
 from api_client import api_client
+from ingestion.processors import TextProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class Ingestor(BaseIngestor):
         # Initialize docling components (sync)
         self.converter = DocumentConverter()
         self.chunker = HybridChunker()  # Use default tokenizer behavior
+        self.processor = TextProcessor(api_client)
 
     async def process_file(
         self, file_path: str, progress_callback: Optional[Callable[[dict], None]] = None
@@ -49,16 +51,72 @@ class Ingestor(BaseIngestor):
         """
         logger.info(f"Processing {file_path}...")
 
-        # Run sync docling conversion in thread
+        # Determine file type
+        import os
+        file_ext = os.path.splitext(file_path)[1].lower()
+        plain_text_extensions = {'.txt', '.sql', '.md', '.csv', '.json', '.xml'}
+        
         loop = asyncio.get_running_loop()
-        try:
-            result = await loop.run_in_executor(None, self.converter.convert, file_path)
-            doc = result.document
-            # chunking might be fast enough to run in thread or loop, let's run in thread to be safe
-            chunks = await loop.run_in_executor(None, list, self.chunker.chunk(doc))
-        except Exception as e:
-            logger.error(f"Error parsing file {file_path}: {e}")
-            return
+        
+        if file_ext in plain_text_extensions:
+            # Handle plain text files directly
+            logger.info(f"Processing plain text file: {file_path}")
+            try:
+                # Read full text
+                full_text = ""
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        full_text = f.read()
+                except UnicodeDecodeError:
+                    with open(file_path, 'r', encoding='latin-1') as f:
+                        full_text = f.read()
+                
+                # Extract and store SQL queries from full text
+                if full_text and len(full_text.strip()) > 0:
+                    try:
+                        await self._extract_and_store_sql_queries(full_text, file_path)
+                        logger.info(f"SQL query extraction completed for {file_path}")
+                    except Exception as e:
+                        logger.warning(f"Error extracting SQL queries: {e}")
+                
+                # Chunk the text using simple paragraph splitting
+                chunks = await loop.run_in_executor(None, self.processor.chunk_text_file, file_path)
+                
+            except Exception as e:
+                logger.error(f"Error processing plain text file {file_path}: {e}")
+                return
+        else:
+            # Use docling for complex document formats (PDF, DOCX, XLSX, etc.)
+            try:
+                result = await loop.run_in_executor(None, self.converter.convert, file_path)
+                doc = result.document
+                # Extract full text for SQL query detection
+                full_text = ""
+                try:
+                    # Try common attributes for getting full text from docling Document
+                    if hasattr(doc, 'text'):
+                        full_text = doc.text
+                    elif hasattr(doc, 'get_text'):
+                        full_text = doc.get_text()
+                    else:
+                        # Fallback: concatenate chunk texts after chunking
+                        pass
+                except Exception as e:
+                    logger.warning(f"Could not extract full text from document: {e}")
+                
+                # Extract and store SQL queries from full text if available
+                if full_text and len(full_text.strip()) > 0:
+                    try:
+                        await self._extract_and_store_sql_queries(full_text, file_path)
+                        logger.info(f"SQL query extraction completed for {file_path}")
+                    except Exception as e:
+                        logger.warning(f"Error extracting SQL queries: {e}")
+                
+                # chunking might be fast enough to run in thread or loop, let's run in thread to be safe
+                chunks = await loop.run_in_executor(None, list, self.chunker.chunk(doc))
+            except Exception as e:
+                logger.error(f"Error parsing file {file_path}: {e}")
+                return
 
         total_chunks = len(chunks)
         batch_size = settings.BATCH_SIZE_EMBEDDINGS
@@ -174,7 +232,7 @@ class Ingestor(BaseIngestor):
         Extract triplets from text and store in graph database.
         """
         try:
-            triplets = await self.extract_triplets(text)
+            triplets = await self.processor.extract_triplets(text)
             if triplets:
                 await self.store_triplets(triplets)
         except Exception as e:
@@ -189,12 +247,6 @@ class Ingestor(BaseIngestor):
             return
 
         # 1. Store in Vector DB (PostgreSQL)
-        # Note: Ideally we batch embeddings here too, but for simplicity of migration
-        # and concurrency with semantic extraction, we do per-chunk or relying on base_ingestor
-        # (which currently does single item batch).
-        # If we really want batching here, we should collect all texts first.
-        # But let's stick to parallel processing for now as per instructions "Async Support".
-
         try:
             embedding = await self.get_embedding(text)
             await self.store_vector(
@@ -202,44 +254,57 @@ class Ingestor(BaseIngestor):
             )
 
             # 2. Extract Triplets and Store in Graph DB (Neo4j)
-            triplets = await self.extract_triplets(text)
+            triplets = await self.processor.extract_triplets(text)
             if triplets:
                 await self.store_triplets(triplets)
         except Exception as e:
             logger.error(f"Error processing chunk {index} of {file_path}: {e}")
 
-    @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
-    )
-    async def extract_triplets(self, text: str) -> List[Dict]:
+    async def _extract_and_store_sql_queries(self, text: str, source: str) -> None:
         """
-        Extract semantic triplets (subject-predicate-object) from text using LLM.
-        """
-        prompt = f"""
-        Extract semantic triplets (Subject, Predicate, Object) from the following text.
-        Return ONLY a JSON list of objects with "subject", "predicate", and "object" keys.
-        Do not include any explanation or markdown formatting (like ```json).
-        
-        Text: {text}
+        Extract SQL queries from text and store in query_embeddings table.
         """
         try:
-            # Use api_client directly
-            response = await self.api_client.get_completion(prompt)
-
-            # Clean response
-            cleaned = response.replace("```json", "").replace("```", "").strip()
-
-            data = json.loads(cleaned)
-            if isinstance(data, list):
-                return data
-            elif isinstance(data, dict) and "triplets" in data:
-                return data["triplets"]
-            return []
+            sql_queries = await self.processor.extract_sql_queries(text)
+            if not sql_queries:
+                return
+            
+            for sql_data in sql_queries:
+                sql_query = sql_data.get("sql_query", "").strip()
+                if not sql_query:
+                    continue
+                
+                # Generate embedding for the SQL query
+                embeddings = await self.api_client.get_embeddings([sql_query])
+                embedding = embeddings[0]
+                
+                # Prepare metadata
+                query_type = sql_data.get("query_type")
+                tables = sql_data.get("tables", [])
+                columns = sql_data.get("columns", [])
+                joins = sql_data.get("joins", [])
+                
+                # Convert joins to table_links format
+                table_links = None
+                if joins and isinstance(joins, list):
+                    table_links = {"joins": joins}
+                
+                # Store in query_embeddings table
+                await self.db.insert_query_embedding(
+                    question=sql_query,  # Use SQL as question for now
+                    sql_query=sql_query,
+                    embedding=embedding,
+                    description=f"SQL query extracted from {source}",
+                    query_type=query_type,
+                    associated_tables=tables,
+                    table_links=table_links,
+                    used_columns=columns,
+                    database_schema="public"
+                )
+                logger.info(f"Stored SQL query: {query_type} involving {len(tables)} tables")
+                
         except Exception as e:
-            logger.warning(
-                f"Error extracting triplets: {e}"
-            )  # Warning to avoid spamming errors on bad LLM output
-            return []
+            logger.warning(f"Error storing SQL queries: {e}")
 
 
 if __name__ == "__main__":

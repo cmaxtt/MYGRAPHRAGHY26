@@ -1,0 +1,36 @@
+SQL Query Examples Document
+
+This document contains various SQL queries for testing the SQL query retrieval system.
+
+1. SELECT customer_id, COUNT(*) as order_count FROM orders GROUP BY customer_id HAVING COUNT(*) > 5;
+
+2. INSERT INTO products (name, price, category) VALUES ('Laptop', 999.99, 'Electronics'), ('Mouse', 29.99, 'Accessories');
+
+3. UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = 123;
+
+4. DELETE FROM logs WHERE created_at < NOW() - INTERVAL '30 days';
+
+5. CREATE TABLE employees (
+    employee_id SERIAL PRIMARY KEY,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
+    department VARCHAR(50),
+    salary DECIMAL(10,2)
+);
+
+6. SELECT 
+    c.name as customer_name,
+    SUM(o.total) as total_spent,
+    AVG(o.total) as avg_order_value
+FROM customers c
+INNER JOIN orders o ON c.customer_id = o.customer_id
+WHERE o.order_date >= '2024-01-01'
+GROUP BY c.customer_id, c.name
+ORDER BY total_spent DESC
+LIMIT 10;
+
+7. ALTER TABLE products ADD COLUMN stock_quantity INTEGER DEFAULT 0;
+
+8. DROP TABLE IF EXISTS temporary_data;
+
+These are example queries that should be extracted and indexed.

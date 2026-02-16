@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
-from typing import List, Dict
+from typing import List, Dict, Optional
 import json
 from cachetools import LRUCache
 
@@ -256,5 +256,232 @@ class SearchEngine:
                 )
         return nodes, edges
 
+    async def close(self):
+        await self.db.close()
+
+
+class QuerySearchEngine:
+    """Search engine for retrieving SQL queries using semantic similarity and metadata filtering."""
+    
+    def __init__(self, db=None):
+        self.db = db or Database()
+        self.api_client = api_client
+    
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
+    )
+    async def search_sql_queries(
+        self, 
+        query: str, 
+        limit: int = 5,
+        query_type: Optional[str] = None,
+        tables: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """
+        Search for relevant SQL queries using semantic similarity and optional filters.
+        
+        Args:
+            query: Natural language query about SQL/database schema
+            limit: Maximum number of results to return
+            query_type: Optional filter by SQL query type (SELECT, INSERT, etc.)
+            tables: Optional filter by tables involved
+            
+        Returns:
+            List of dictionaries with query details and similarity scores
+        """
+        # Get embedding for the natural language query
+        embeddings = await self.api_client.get_embeddings([query])
+        embedding = embeddings[0]
+        
+        # Search query_embeddings table
+        results = await self.db.search_query_embeddings(
+            embedding=embedding,
+            limit=limit,
+            query_type=query_type,
+            tables=tables
+        )
+        
+        # Convert asyncpg records to dicts
+        formatted_results = []
+        for row in results:
+            formatted_results.append({
+                "id": row["id"],
+                "question": row["question"],
+                "sql_query": row["sql_query"],
+                "similarity": float(row["similarity"]),
+                "tables": row["associated_tables"] or [],
+                "table_links": row["table_links"] or {}
+            })
+        
+        return formatted_results
+    
+    async def get_sql_query_details(self, query_id: int) -> Dict:
+        """Get complete details of a specific SQL query by ID."""
+        query = await self.db.get_query_by_id(query_id)
+        if not query:
+            return {}
+        
+        return {
+            "id": query["id"],
+            "question": query["question"],
+            "description": query["description"],
+            "sql_query": query["sql_query"],
+            "query_type": query["query_type"],
+            "tables": query["associated_tables"] or [],
+            "table_links": query["table_links"] or {},
+            "used_columns": query["used_columns"] or [],
+            "database_schema": query["database_schema"],
+            "version": query["version"],
+            "is_active": query["is_active"],
+            "superseded_by": query["superseded_by"],
+            "created_at": query["created_at"].isoformat() if query["created_at"] else None,
+            "updated_at": query["updated_at"].isoformat() if query["updated_at"] else None
+        }
+    
+    async def get_all_query_types(self) -> List[str]:
+        """Get distinct query types present in the database."""
+        pool = await self.db.get_pg_pool()
+        if not pool:
+            return []
+        
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT query_type 
+                FROM query_embeddings 
+                WHERE query_type IS NOT NULL AND is_active = true
+                ORDER BY query_type
+            """)
+            return [row["query_type"] for row in rows if row["query_type"]]
+    
+    async def get_all_tables(self) -> List[str]:
+        """Get distinct tables referenced in SQL queries."""
+        pool = await self.db.get_pg_pool()
+        if not pool:
+            return []
+        
+        async with pool.acquire() as conn:
+            # Extract unique tables from the array column
+            rows = await conn.fetch("""
+                SELECT DISTINCT unnest(associated_tables) as table_name
+                FROM query_embeddings 
+                WHERE associated_tables IS NOT NULL AND is_active = true
+                ORDER BY table_name
+            """)
+            return [row["table_name"] for row in rows if row["table_name"]]
+    
+    async def get_query_statistics(self) -> Dict:
+        """Get statistics about stored SQL queries."""
+        pool = await self.db.get_pg_pool()
+        if not pool:
+            return {}
+        
+        async with pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM query_embeddings WHERE is_active = true")
+            by_type_rows = await conn.fetch("""
+                SELECT query_type, COUNT(*) as count
+                FROM query_embeddings 
+                WHERE is_active = true AND query_type IS NOT NULL
+                GROUP BY query_type
+                ORDER BY count DESC
+            """)
+            
+            by_type = {row["query_type"]: row["count"] for row in by_type_rows}
+            
+            # Get most recent queries
+            recent = await conn.fetch("""
+                SELECT id, question, sql_query, created_at
+                FROM query_embeddings 
+                WHERE is_active = true
+                ORDER BY created_at DESC
+                LIMIT 5
+            """)
+            
+            recent_queries = [
+                {
+                    "id": row["id"],
+                    "question": row["question"][:100] + "..." if len(row["question"]) > 100 else row["question"],
+                    "sql_query": row["sql_query"][:100] + "..." if len(row["sql_query"]) > 100 else row["sql_query"],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None
+                }
+                for row in recent
+            ]
+            
+            return {
+                "total_queries": total,
+                "queries_by_type": by_type,
+                "recent_queries": recent_queries
+            }
+    
+    async def generate_sql_from_natural_language(self, query: str, context_queries: Optional[List[Dict]] = None) -> Dict:
+        """
+        Use LLM to generate SQL from natural language, augmented with similar stored queries.
+        
+        Args:
+            query: Natural language query about data/schema
+            context_queries: Optional pre-fetched similar queries for context
+            
+        Returns:
+            Dictionary with generated SQL and metadata
+        """
+        if context_queries is None:
+            # First, find similar stored queries
+            context_queries = await self.search_sql_queries(query, limit=3)
+        
+        # Prepare context from similar queries
+        context_parts = []
+        for i, q in enumerate(context_queries):
+            context_parts.append(f"Similar query {i+1} (similarity: {q['similarity']:.3f}):")
+            context_parts.append(f"Question: {q['question']}")
+            context_parts.append(f"SQL: {q['sql_query']}")
+            if q['tables']:
+                context_parts.append(f"Tables: {', '.join(q['tables'])}")
+            context_parts.append("")
+        
+        context = "\n".join(context_parts) if context_parts else "No similar queries found."
+        
+        prompt = f"""
+        Based on the following natural language query and similar SQL queries, generate an appropriate SQL query.
+        
+        Natural Language Query: {query}
+        
+        Similar SQL Queries for reference:
+        {context}
+        
+        Generate a SQL query that answers the natural language query. Consider:
+        1. The table structure inferred from similar queries
+        2. Appropriate JOINs if multiple tables are involved
+        3. Correct column names and data types
+        
+        Return your answer as a JSON object with these keys:
+        - "sql_query": The generated SQL query
+        - "explanation": Brief explanation of the query
+        - "tables": List of tables used
+        - "columns": List of columns referenced
+        
+        Only return the JSON object, no additional text.
+        """
+        
+        try:
+            response = await self.api_client.get_completion(prompt)
+            # Clean response
+            cleaned = response.replace("```json", "").replace("```", "").strip()
+            data = json.loads(cleaned)
+            
+            # Add metadata
+            data["context_queries_used"] = len(context_queries)
+            data["original_query"] = query
+            
+            return data
+        except Exception as e:
+            logger.error(f"Error generating SQL from natural language: {e}")
+            return {
+                "sql_query": "",
+                "explanation": f"Error generating SQL: {str(e)}",
+                "tables": [],
+                "columns": [],
+                "context_queries_used": len(context_queries),
+                "original_query": query
+            }
+    
     async def close(self):
         await self.db.close()

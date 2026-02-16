@@ -1,0 +1,118 @@
+Your design is a solid foundation for building a semantic SQL retrieval system with PostgreSQL and pgvector. Let me expand on it with a more detailed schema, additional best practices, and query examples that will help you achieve hybrid search, versioning, and effective LLM-assisted query composition.
+
+Recommended Table Schema
+sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE query_embeddings (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- Core text fields
+    question TEXT NOT NULL,               -- Natural language prompt
+    description TEXT,                      -- Optional explanation / context
+    sql_query TEXT NOT NULL,               -- The canonical SQL
+
+    -- Metadata for filtering and LLM context
+    query_type VARCHAR(50),                 -- e.g., 'SELECT', 'INSERT', 'analytic'
+    associated_tables TEXT[],                -- Array of table names involved
+    table_links JSONB,                       -- Join conditions or relationship descriptions
+    used_columns JSONB,                      -- Which columns are referenced (for fine-grained context)
+    database_schema TEXT DEFAULT 'public',   -- Schema name if multiple schemas exist
+
+    -- Version control
+    version INTEGER NOT NULL DEFAULT 1,      -- Increment when SQL changes
+    is_active BOOLEAN DEFAULT true,          -- Soft delete / deprecate old versions
+    superseded_by BIGINT REFERENCES query_embeddings(id), -- Link to newer version
+
+    -- Embedding vector (dimension depends on your model, e.g., 1536 for text-embedding-ada-002)
+    embedding VECTOR(1536) NOT NULL,
+
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for performance
+CREATE INDEX idx_query_embeddings_type ON query_embeddings(query_type);
+CREATE INDEX idx_query_embeddings_tables ON query_embeddings USING GIN(associated_tables);
+CREATE INDEX idx_query_embeddings_links ON query_embeddings USING GIN(table_links);
+CREATE INDEX idx_query_embeddings_active ON query_embeddings(is_active);
+
+-- Vector similarity index (choose one based on dataset size)
+-- For large datasets, HNSW is usually better
+CREATE INDEX idx_query_embeddings_embedding_cosine 
+    ON query_embeddings 
+    USING ivfflat (embedding vector_cosine_ops)  -- or hnsw
+    WITH (lists = 100);  -- adjust lists based on data size
+Explanation of Columns
+question & description: The natural language prompt that users might ask, and an optional longer description (like the "rows 5 & 8" examples you mentioned).
+
+sql_query: The actual SQL that answers the question. This is what you'll return to the LLM or user.
+
+query_type: Helps filter by operation type (e.g., "SELECT", "UPDATE", "aggregate", "join"). Useful for hybrid search.
+
+associated_tables: Array of table names involved. You can filter searches to only consider queries that touch certain tables.
+
+table_links: A JSONB structure describing how tables are joined. For example:
+
+json
+{
+  "joins": [
+    {"from": "orders", "to": "customers", "on": "orders.customer_id = customers.id"}
+  ]
+}
+This can be fed directly to an LLM to help it understand relationships.
+
+used_columns: JSONB listing columns and their aliases, which can help the LLM generate more precise queries.
+
+version: Enables tracking changes to the same logical question over time. You can keep the latest active version and archive old ones.
+
+is_active: Allows soft deletion or hiding of deprecated queries.
+
+superseded_by: Optional self-reference to maintain a version chain.
+
+embedding: The vector representation of the question (or a combination of question + description). Use the same embedding model during search.
+
+Timestamps: For auditing and cache invalidation.
+
+Hybrid Search Example
+To retrieve the most relevant queries for a user’s natural language input, combine vector similarity with metadata filters:
+
+sql
+WITH input AS (
+    SELECT 'What were the total sales per customer last month?'::TEXT AS user_question
+)
+SELECT 
+    qe.id,
+    qe.question,
+    qe.sql_query,
+    qe.associated_tables,
+    qe.table_links,
+    1 - (qe.embedding <=> embedding_of_user_question) AS similarity
+FROM 
+    query_embeddings qe,
+    input
+WHERE 
+    qe.is_active = true
+    AND qe.query_type IN ('SELECT', 'aggregate')
+    AND qe.associated_tables && ARRAY['orders', 'customers']  -- optional table filter
+ORDER BY 
+    qe.embedding <=> embedding_of_user_question
+LIMIT 5;
+You’ll need to generate the embedding_of_user_question using the same model (e.g., OpenAI’s text-embedding-ada-002). In practice, you’d compute that in your application code and pass it as a parameter.
+
+Generating Embeddings
+Use a consistent embedding model. OpenAI’s text-embedding-ada-002 yields 1536 dimensions. If you use a different model, adjust the VECTOR(n) dimension accordingly.
+
+You can embed just the question, or concatenate question and description for richer representation.
+
+Consider also embedding metadata (like table names) if you want pure semantic search without filters.
+
+Versioning Strategy
+When you need to update a SQL query for the same natural language question:
+
+Insert a new row with the same question but a higher version.
+
+Set is_active = false on the old row.
+
+Optionally set superseded_by to the new ID.
