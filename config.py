@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     HYBRID_RERANK: bool = False
 
     # Paths
-    DATA_PATH: str = "data/clinical"
+    DATA_PATH: str = "data/documents"
 
     # Security
     ALLOWED_FILE_EXTENSIONS: list[str] = [".pdf", ".docx", ".xlsx", ".csv", ".txt"]

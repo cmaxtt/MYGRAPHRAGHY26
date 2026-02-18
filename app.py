@@ -54,7 +54,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🌐 CompuMax Local Hybrid GraphRAG System 2025")
+st.title("🌐 CompuMax Local Hybrid GraphRAG System 2026")
 st.markdown("""
     ---
     Transform static documents into dynamic, interconnected knowledge.

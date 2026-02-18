@@ -139,15 +139,12 @@ class Database:
                 "CREATE FULLTEXT INDEX entity_names_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]"
             )
 
-            # Clinical Specific constraints
-            for label, prop in [
-                ("Patient", "patientId"),
-                ("Doctor", "doctorId"),
-                ("Medication", "medicationId"),
-                ("Condition", "conditionId"),
-                ("Visit", "visitId"),
-            ]:
-                await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:" + label + ") REQUIRE n." + prop + " IS UNIQUE")  # type: ignore
+            # SQL RAG Constraints
+            for label in ["Query", "Table", "Column"]:
+                await session.run(f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE")
+
+
+
 
     async def insert_query_embedding(self, question, sql_query, embedding, description=None, query_type=None,
                                      associated_tables=None, table_links=None, used_columns=None,

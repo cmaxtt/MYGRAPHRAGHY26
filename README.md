@@ -1,4 +1,4 @@
-# 🌐 CompuMax Local Hybrid GraphRAG System 2025
+# 🌐 CompuMax Local Hybrid GraphRAG System 2026
 
 A high-performance, privacy-focused **Graph Retrieval-Augmented Generation (GraphRAG)** system that combines the power of **Vector Search** with the contextual richness of **Knowledge Graphs**. Built to run entirely locally, keeping your data secure.
 
@@ -9,29 +9,32 @@ A high-performance, privacy-focused **Graph Retrieval-Augmented Generation (Grap
 ## 🚀 Key Features
 
 *   **Hybrid Search Engine**: Synergizes **pgvector** (PostgreSQL) for semantic similarity and **Neo4j** for graph traversals to answer complex queries.
+*   **Text-to-SQL Interface**:  *New!*  Translates natural language questions into accurate SQL queries using a hybrid RAG approach (Vector + Graph) to understand database schema and usage patterns.
 *   **Efficient & Scalable**: Uses **DeepSeek API** for LLM reasoning and **local SentenceTransformer** for embeddings, balancing performance and privacy.
 *   **Multi-Modal Ingestion**: 
-    *   **Clinical Data**: specialized ingestion for CSV patient records, doctor interactions, and prescriptions.
     *   **Document Uploads**: Support for PDF, DOCX, XLSX, CSV, and TXT files via the Web UI.
+    *   **SQL Training Data**: Ingest CSVs of natural language queries and their corresponding SQL to train the system.
 *   **Interactive UI**: A polished **Streamlit** interface offering:
     *   Real-time chat with citation of sources (Vector vs. Graph nodes).
+    *   **SQL Query Tab**:  Execute natural language queries against your data.
     *   Dynamic **Knowledge Graph Visualization**.
     *   System health metrics and database stats.
-*   **Advanced Entity Extraction**: Automatically identifies people, medications, conditions, and IDs to construct a rich knowledge graph.
+*   **Advanced Entity Extraction**: Automatically identifies key entities and concepts to construct a rich knowledge graph.
 
 ---
 
 ## 🏗️ Architecture
 
 1.  **Ingestion Layer**: 
-    *   Documents are parsed and chunked.
-    *   **Vector Path**: Chunks are embedded using `nomic-embed-text` and stored in **PostgreSQL**.
-    *   **Graph Path**: Entities and relationships are extracted using an LLM and stored in **Neo4j**.
+    *   **Documents**: Parsed and chunked.
+    *   **SQL Data**: Natural language queries are embedded (Vector) and parsed into Query/Table/Column nodes (Graph).
+    *   **Vector Path**: Chunks/Queries are embedded using `nomic-embed-text` and stored in **PostgreSQL**.
+    *   **Graph Path**: Entities/Tables and relationships are extracted/parsed and stored in **Neo4j**.
 2.  **Retrieval Layer**:
-    *   **Vector Search**: Finds conceptually similar text chunks.
-    *   **Graph Search**: Traverses the graph to find related entities (e.g., "What side effects does the medication prescribed to Patient X have?").
+    *   **Vector Search**: Finds conceptually similar text chunks or past SQL queries.
+    *   **Graph Search**: Traverses the graph to find related entities, relationships, or table usage patterns.
 3.  **Generation Layer**:
-    *   The LLM (`gpt-oss:20b-cloud` or configured model) synthesizes the answer using context from both sources.
+    *   The LLM (`deepseek-chat` or `deepseek-reasoner`) synthesizes the answer or generates SQL using context from both sources.
 
 ---
 
@@ -91,16 +94,18 @@ streamlit run app.py
 ```
 Access the app at `http://localhost:8501`.
 
-### Ingesting Clinical Demo Data
-To populate the graph with the provided sample clinical dataset (Patients, Doctors, Medications):
-```bash
-python ingest_clinical.py
-```
-
 ### Using the UI
-1.  **Chat Tab**: Ask questions like "Who is Dr. Smith treating?" or "What are the side effects of Metformin?".
-2.  **Knowledge Graph Tab**: Visualize the nodes and edges created from your data.
-3.  **Sidebar**: Upload your own documents (PDF, TXT, etc.) to expand the knowledge base.
+1.  **Chat Tab**: Ask questions about your documents (unstructured data).
+2.  **SQL Query Tab**: Ask questions about your structured data (e.g., "Show me top customers by sales").
+3.  **Knowledge Graph Tab**: Visualize the nodes and edges created from your data.
+4.  **Sidebar**: Upload your own documents (PDF, TXT, etc.) to expand the knowledge base.
+
+### Ingesting SQL Training Data
+To teach the system about your database schema and common queries, prepare a CSV file (e.g., `data/training_data.csv`) with `natural_language_query` and `sql_query` columns, then run:
+
+```bash
+python -m ingestion.sql_ingestor
+```
 
 ---
 
@@ -112,13 +117,14 @@ python ingest_clinical.py
 ├── config.py               # Central configuration (env vars, constants)
 ├── db.py                   # Database connection manager (Neo4j & Postgres)
 ├── ingest.py               # Generic document ingestor
-├── ingest_clinical.py      # Specialized clinical CSV ingestor
-├── search.py               # Hybrid search engine logic
+├── ingestion/
+│   └── sql_ingestor.py     # SQL training data ingestor
+├── search.py               # Hybrid search engine logic (Chat & SQL)
 ├── base_ingestor.py        # Base class for ingestion strategies
 ├── docker-compose.yml      # Container definition for DBs
 ├── requirements.txt        # Python dependencies
 ├── data/
-│   └── clinical/           # Sample CSV datasets
+│   └── training_data.csv   # Example SQL training data
 └── scripts/                # Utility scripts
 ```
 

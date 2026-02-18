@@ -105,10 +105,10 @@ class SearchEngine:
         prompt = f"""
         Extract the most important specific entities from the following query.
         Look for:
-        - People (e.g., Sarah Singh)
-        - Identifiers (e.g., P20, V72, D1)
-        - Medications (e.g., Tamoxifen)
-        - Conditions (e.g., Type 2 Diabetes)
+        - Names of people, organizations, or places
+        - Specific identifiers or codes
+        - Products or items mentioned
+        - Key concepts or topics
         
         Return ONLY a comma-separated list of names or IDs. No extra text.
         Query: {query}
@@ -151,26 +151,18 @@ class SearchEngine:
                   UNION
                   // Exact ID matches
                   MATCH (matchedNode:Entity)
-                  WHERE matchedNode.patientId = searchTerm 
-                     OR matchedNode.doctorId = searchTerm 
-                     OR matchedNode.visitId = searchTerm
+                  WHERE matchedNode.id = searchTerm 
                   RETURN matchedNode
                   LIMIT 5
                 }
                 WITH DISTINCT matchedNode
                 MATCH (matchedNode)-[r]-(neighbor:Entity)
                 
-                // Optional 2nd level for Visits
-                OPTIONAL MATCH (neighbor)-[r2:PRESCRIBED|TREATED_BY]-(grandchild:Entity)
-                WHERE neighbor:Visit
-                
                 RETURN DISTINCT 
                     matchedNode.name as s, 
                     type(r) as p, 
                     neighbor.name as o, 
-                    labels(matchedNode) as s_labels, labels(neighbor) as o_labels,
-                    type(r2) as p2,
-                    grandchild.name as g, labels(grandchild) as g_labels
+                    labels(matchedNode) as s_labels, labels(neighbor) as o_labels
                 LIMIT 50
                 """
                 try:
@@ -190,12 +182,7 @@ class SearchEngine:
                             f"({s_name}:{s_label}) -[{record['p']}]-> ({o_name}:{o_label})"
                         )
 
-                        if record["p2"]:
-                            g_label = get_label(record["g_labels"])
-                            g_name = record["g"] or "Unknown"
-                            results.append(
-                                f"({o_name}:{o_label}) -[{record['p2']}]-> ({g_name}:{g_label})"
-                            )
+
                 except Exception as e:
                     logger.error(f"Error in graph search for entity '{entity}': {e}")
 
@@ -210,10 +197,9 @@ class SearchEngine:
     async def generate_answer(self, query: str, context: str) -> str:
         """Generate final answer using DeepSeek Chat with prompt caching."""
         system_prompt = """
-        You are a helpful clinical assistant. 
+        You are a helpful research assistant. 
         Use the provided context to answer the user query accurately.
         If the context is insufficient, state that clearly.
-        Maintain patient privacy and professional tone.
         """
 
         prompt = f"""
@@ -427,6 +413,38 @@ class QuerySearchEngine:
             # First, find similar stored queries
             context_queries = await self.search_sql_queries(query, limit=3)
         
+        # 2. Graph Traversal: Find related tables/rules for the found queries
+        # Gather all tables from the context queries
+        tables_to_explore = set()
+        for q in context_queries:
+            if q.get('tables'):
+                tables_to_explore.update(q['tables'])
+        
+        # Query Neo4j for these tables to find related columns or business rules
+        graph_context = []
+        if tables_to_explore:
+            driver = await self.db.get_neo4j_driver()
+            async with driver.session() as session:
+                # Find other tables accessed by queries that also access these tables
+                # OR find specific metadata about these tables (conceptually)
+                # For now, let's find other queries that access the same tables to broaden context
+                # OR simply relationships like (Table)-[:HAS_COLUMN]->(Column) if we had that.
+                # The prompt said: "Look up the tables identified... in Neo4j to see if there are other related columns or business rules"
+                # Since our ingestion creates (Query)-[ACCESSES]->(Table), we can find other queries that access these tables.
+                
+                table_list = list(tables_to_explore)
+                query = """
+                MATCH (t:Table) WHERE t.id IN $tables
+                MATCH (q:Query)-[:ACCESSES]->(t)
+                RETURN t.id as table, collect(q.text)[..3] as related_queries
+                """
+                try:
+                    res = await session.run(query, tables=table_list)
+                    async for record in res:
+                        graph_context.append(f"Table '{record['table']}' is also used in queries: {record['related_queries']}")
+                except Exception as e:
+                    logger.warning(f"Graph traversal failed: {e}")
+
         # Prepare context from similar queries
         context_parts = []
         for i, q in enumerate(context_queries):
@@ -437,6 +455,11 @@ class QuerySearchEngine:
                 context_parts.append(f"Tables: {', '.join(q['tables'])}")
             context_parts.append("")
         
+        if graph_context:
+            context_parts.append("Graph Context (Related usage patterns):")
+            context_parts.extend(graph_context)
+            context_parts.append("")
+
         context = "\n".join(context_parts) if context_parts else "No similar queries found."
         
         prompt = f"""
@@ -444,7 +467,7 @@ class QuerySearchEngine:
         
         Natural Language Query: {query}
         
-        Similar SQL Queries for reference:
+        Similar SQL Queries and Graph Context for reference:
         {context}
         
         Generate a SQL query that answers the natural language query. Consider:
@@ -470,6 +493,7 @@ class QuerySearchEngine:
             # Add metadata
             data["context_queries_used"] = len(context_queries)
             data["original_query"] = query
+            data["graph_context_used"] = len(graph_context)
             
             return data
         except Exception as e:
